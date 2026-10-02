@@ -119,6 +119,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
 .travel-mode-button:active { transform: scale(.97); }
 .travel-mode-button--active { border-color: #7fb0f2; background: #eaf2ff; color: #1769d2; box-shadow: inset 0 0 0 1px #b7d3fa; }
 .route-action-footer .primary-button { width: 100%; margin: 0; }
+.route-loading { display: flex; min-height: 46px; align-items: center; justify-content: center; gap: 9px; color: #53616d; font-size: 12px; font-weight: 650; }
 .start-button { min-height: 46px; }
 .directions-section { min-height: 80px; padding: 0 22px 15px; }
 .directions-heading { display: flex; justify-content: space-between; padding: 0 0 7px; border-bottom: 1px solid var(--line); color: #98a39b; font-size: 8px; font-weight: 750; letter-spacing: .13em; }
@@ -741,6 +742,30 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
   }
 }
 
+.search-submit.search-submit--small {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.navigation-panel:not(.navigation-panel--active) .search-submit.search-submit--small,
+.search-results-form .search-submit.search-submit--small {
+  width: 28px;
+  height: 28px;
+}
+
+.origin-location-button.origin-location-button--small {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+}
+
+.navigation-panel:not(.navigation-panel--active) .origin-location-button.origin-location-button--small {
+  width: 28px;
+  height: 28px;
+}
+
 .map-location-control {
   display: flex;
   flex-direction: column;
@@ -822,6 +847,14 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
 
 .app-shell--navigating .map-status-banner--error {
   top: calc(184px + env(safe-area-inset-top));
+}
+
+.app-shell .map-status-banner--centered {
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  justify-content: center;
+  text-align: center;
 }
 
 .destination-reached-banner {
