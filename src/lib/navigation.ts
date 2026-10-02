@@ -126,6 +126,13 @@ export type NavigationGuidance = {
   kurmanciText: string
 }
 
+export type RouteProjection = {
+  distance: number
+  along: number
+  remaining: number
+  bearing: number
+}
+
 export function navigationAnnouncementThresholds(mode: TravelMode) {
   return mode === 'foot'
     ? { early: 150, repeat: 30, now: 10 }
@@ -321,15 +328,21 @@ export function createNavigationGuidance(
   }
 }
 
-export function distanceToRoute(point: Point, coordinates: [number, number][]) {
-  if (coordinates.length < 2) return Number.POSITIVE_INFINITY
+export function projectOntoRoute(
+  point: Point,
+  coordinates: [number, number][],
+  previousAlong?: number,
+): RouteProjection | null {
+  if (coordinates.length < 2) return null
   const latitudeScale = 111_320
-  const longitudeScale = latitudeScale * Math.cos((point.lat * Math.PI) / 180)
-  let closest = Number.POSITIVE_INFINITY
-
+  const longitudeScale = latitudeScale * Math.max(0.01, Math.cos((point.lat * Math.PI) / 180))
+  let totalDistance = 0
+  let closest: RouteProjection | null = null
+  let closestContinuous: RouteProjection | null = null
   for (let index = 1; index < coordinates.length; index += 1) {
     const [previousLon, previousLat] = coordinates[index - 1]
     const [lon, lat] = coordinates[index]
+    if (![previousLon, previousLat, lon, lat].every(Number.isFinite)) continue
     const startX = (previousLon - point.lon) * longitudeScale
     const startY = (previousLat - point.lat) * latitudeScale
     const endX = (lon - point.lon) * longitudeScale
@@ -341,47 +354,46 @@ export function distanceToRoute(point: Point, coordinates: [number, number][]) {
       ? Math.min(1, Math.max(0, -(startX * segmentX + startY * segmentY) / segmentLengthSquared))
       : 0
     const distance = Math.hypot(startX + progress * segmentX, startY + progress * segmentY)
-    closest = Math.min(closest, distance)
-  }
-  return closest
-}
-
-export function distanceAlongRouteToEnd(point: Point, coordinates: [number, number][]) {
-  if (coordinates.length < 2) return Number.POSITIVE_INFINITY
-
-  const latitudeScale = 111_320
-  const longitudeScale = latitudeScale * Math.cos((point.lat * Math.PI) / 180)
-  let closestDistance = Number.POSITIVE_INFINITY
-  let distanceAlong = 0
-  let distanceBeforeSegment = 0
-
-  for (let index = 1; index < coordinates.length; index += 1) {
-    const [previousLon, previousLat] = coordinates[index - 1]
-    const [lon, lat] = coordinates[index]
-    const startX = (previousLon - point.lon) * longitudeScale
-    const startY = (previousLat - point.lat) * latitudeScale
-    const endX = (lon - point.lon) * longitudeScale
-    const endY = (lat - point.lat) * latitudeScale
-    const segmentX = endX - startX
-    const segmentY = endY - startY
-    const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
-    const progress = segmentLengthSquared
-      ? Math.min(1, Math.max(0, -(startX * segmentX + startY * segmentY) / segmentLengthSquared))
-      : 0
-    const distanceToSegment = Math.hypot(startX + progress * segmentX, startY + progress * segmentY)
     const segmentLength = distanceBetween(
       { lat: previousLat, lon: previousLon },
       { lat, lon },
     )
-
-    if (distanceToSegment < closestDistance) {
-      closestDistance = distanceToSegment
-      distanceAlong = distanceBeforeSegment + progress * segmentLength
+    const along = totalDistance + progress * segmentLength
+    const candidate = {
+      distance,
+      along,
+      remaining: 0,
+      bearing: bearingBetween({ lat: previousLat, lon: previousLon }, { lat, lon }),
     }
-    distanceBeforeSegment += segmentLength
+    if (!closest || candidate.distance < closest.distance) closest = candidate
+    if (
+      previousAlong === undefined ||
+      (along >= Math.max(0, previousAlong - 80) && along <= previousAlong + 600)
+    ) {
+      if (!closestContinuous || candidate.distance < closestContinuous.distance) closestContinuous = candidate
+    }
+    totalDistance += segmentLength
   }
+  const projection = closestContinuous ?? closest
+  return projection ? { ...projection, remaining: Math.max(0, totalDistance - projection.along) } : null
+}
 
-  return Math.max(0, distanceBeforeSegment - distanceAlong)
+export function distanceToRoute(point: Point, coordinates: [number, number][], previousAlong?: number) {
+  return projectOntoRoute(point, coordinates, previousAlong)?.distance ?? Number.POSITIVE_INFINITY
+}
+
+export function distanceAlongRouteToEnd(point: Point, coordinates: [number, number][], previousAlong?: number) {
+  return projectOntoRoute(point, coordinates, previousAlong)?.remaining ?? Number.POSITIVE_INFINITY
+}
+
+export function bearingBetween(first: Point, second: Point) {
+  const firstLatitude = first.lat * Math.PI / 180
+  const secondLatitude = second.lat * Math.PI / 180
+  const longitudeDelta = (second.lon - first.lon) * Math.PI / 180
+  const y = Math.sin(longitudeDelta) * Math.cos(secondLatitude)
+  const x = Math.cos(firstLatitude) * Math.sin(secondLatitude) -
+    Math.sin(firstLatitude) * Math.cos(secondLatitude) * Math.cos(longitudeDelta)
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360
 }
 
 export function distanceBetween(first: Point, second: Point) {

@@ -43,29 +43,8 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
 .map-control-button { display: grid; width: 42px; height: 42px; place-items: center; border: 0; border-radius: 12px; background: #fbfcf8; box-shadow: 0 5px 20px #20332c24; color: #2d6959; cursor: pointer; transition: transform .18s, background .18s; }
 .map-control-button:hover { transform: translateY(-2px); background: white; }
 .map-control-button.map-perspective-button { gap: 2px; align-content: center; font-size: 10px; font-weight: 750; }
-.lane-guidance { position: absolute; z-index: 490; bottom: 250px; left: 20px; width: min(280px, calc(100vw - 100px)); padding: 12px; border: 1px solid #ffffffda; border-radius: 16px; background: #fffffff2; box-shadow: 0 5px 20px #20332c24; pointer-events: none; }
-.lane-guidance-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: #35424c; font-size: 12px; }
-.lane-guidance-heading span { color: #5f6368; }
-.lane-guidance-road { display: flex; overflow: hidden; border: 2px solid #f4f6f8; border-radius: 8px; background: #414950; }
-.lane-guidance-lane { position: relative; display: grid; min-width: 0; flex: 1; height: 76px; place-items: center; border-right: 2px dashed #ffffffa6; color: #fff; }
-.lane-guidance-lane:last-child { border-right: 0; }
-.lane-guidance-lane--recommended { background: #188038; }
-.lane-guidance-lane svg { width: 100%; max-width: 50px; height: 56px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
-.lane-guidance-check { position: absolute; right: 3px; bottom: 3px; display: grid; width: 15px; height: 15px; place-items: center; border-radius: 50%; background: #fff; color: #188038; font-size: 11px; font-weight: 800; }
-.lane-guidance p { margin: 7px 0 0; color: #188038; font-size: 11px; font-weight: 650; }
-.lane-guidance .lane-guidance-note, .lane-guidance--unavailable p { color: #5f6368; font-weight: 400; line-height: 1.45; }
-.lane-guidance--unavailable { width: min(240px, calc(100vw - 100px)); }
-.lane-guidance--unavailable strong { color: #35424c; font-size: 12px; }
-.map-lane-sign { display: grid; width: max-content !important; max-width: 320px; height: auto !important; padding: 6px; border: 2px solid #fff; border-radius: 9px; color: #fff; background: #35424c; box-shadow: 0 3px 12px #20332c40; pointer-events: none; }
-.map-lane-sign-title { display: block; margin-bottom: 4px; font-size: 10px; text-align: center; }
-.map-lane-sign-road { display: flex; }
-.map-lane-sign-lane { display: grid; width: 26px; height: 32px; place-items: center; border-right: 1px dashed #ffffffa6; }
-.map-lane-sign-lane:last-child { border-right: 0; }
-.map-lane-sign-lane--recommended { background: #188038; }
-.map-lane-sign-lane svg { width: 24px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
 .driving-location { display: block; width: 44px; height: 44px; filter: drop-shadow(0 2px 3px #20332c55); }
 .driving-location svg { width: 100%; height: 100%; }
-@media (max-width: 700px) { .lane-guidance { bottom: calc(245px + env(safe-area-inset-bottom)); left: 16px; padding: 10px; } }
 
 .navigation-panel { position: absolute; z-index: 500; top: 18px; bottom: 18px; left: 18px; display: flex; width: min(404px, calc(100vw - 36px)); flex-direction: column; overflow: auto; border: 1px solid #ffffffb8; border-radius: 19px; background: var(--paper); box-shadow: 0 14px 56px #1a30261c; scrollbar-width: thin; scrollbar-color: #d2ddd6 transparent; }
 .navigation-panel > .search-results-view { order: 2; }
@@ -1912,4 +1891,263 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
 
 .navigation-panel > .search-results-view:has(.app-menu-popover) {
   overflow: visible;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  color: #e5ece8;
+  background: #111714;
+  --ink: #e5ece8;
+  --muted: #a3aea7;
+  --green: #4b82bc;
+  --green-deep: #3c6fa5;
+  --paper: #19211d;
+  --line: #344039;
+  --teal-bright: #84b5a0;
+  --apricot: #ed8a82;
+}
+
+:root[data-theme="dark"] body,
+:root[data-theme="dark"] #app,
+:root[data-theme="dark"] .app-shell {
+  background: #111714;
+  color: #e5ece8;
+}
+
+:root[data-theme="dark"] .map-canvas,
+:root[data-theme="dark"] .leaflet-container,
+:root[data-theme="dark"] .map-inner {
+  background: #141b18;
+}
+
+:root[data-theme="dark"] .leaflet-tile-pane {
+  filter: invert(.88) hue-rotate(180deg) brightness(.78) saturate(.72);
+}
+
+:root[data-theme="dark"] .map-3d-view canvas {
+  filter: invert(.88) hue-rotate(180deg) brightness(.78) saturate(.76);
+}
+
+:root[data-theme="dark"] .leaflet-control-attribution {
+  border: 1px solid #35413a;
+  border-radius: 7px;
+  background: #19211de8 !important;
+  color: #b3bdb7 !important;
+}
+
+:root[data-theme="dark"] .leaflet-control-attribution a {
+  color: #9bbce0 !important;
+}
+
+:root[data-theme="dark"] .leaflet-control-zoom a {
+  border-color: #344039 !important;
+  background: #19211d !important;
+  color: #d4ded8 !important;
+}
+
+:root[data-theme="dark"] .navigation-panel,
+:root[data-theme="dark"] .navigation-drawer,
+:root[data-theme="dark"] .app-menu-popover,
+:root[data-theme="dark"] .search-results-view,
+:root[data-theme="dark"] .route-action-footer,
+:root[data-theme="dark"] .route-form-block,
+:root[data-theme="dark"] .route-summary,
+:root[data-theme="dark"] .navigation-panel--active > .turn-card {
+  border-color: #303c35 !important;
+  background: #19211d !important;
+  color: #e5ece8;
+  box-shadow: 0 12px 36px #0000004d;
+}
+
+:root[data-theme="dark"] .navigation-panel:not(.navigation-panel--active) {
+  background: transparent;
+  box-shadow: none;
+}
+
+:root[data-theme="dark"] .panel-header,
+:root[data-theme="dark"] .search-results-view-header,
+:root[data-theme="dark"] .navigation-footer,
+:root[data-theme="dark"] .panel-footer,
+:root[data-theme="dark"] .search-results-list,
+:root[data-theme="dark"] .navigation-directions .direction-row {
+  border-color: #303c35;
+}
+
+:root[data-theme="dark"] .route-stops,
+:root[data-theme="dark"] .stop-fields,
+:root[data-theme="dark"] .origin-field,
+:root[data-theme="dark"] .destination-field,
+:root[data-theme="dark"] .search-form,
+:root[data-theme="dark"] .search-results-form {
+  border-color: #37443d !important;
+  background: #202a25 !important;
+}
+
+:root[data-theme="dark"] .search-form input,
+:root[data-theme="dark"] .search-results-form input,
+:root[data-theme="dark"] .navigation-panel input,
+:root[data-theme="dark"] .navigation-panel textarea,
+:root[data-theme="dark"] .navigation-panel select {
+  color: #e5ece8;
+  caret-color: #92b9df;
+}
+
+:root[data-theme="dark"] .search-form input::placeholder,
+:root[data-theme="dark"] .search-results-form input::placeholder,
+:root[data-theme="dark"] .navigation-panel input::placeholder {
+  color: #87958d;
+}
+
+:root[data-theme="dark"] .wordmark,
+:root[data-theme="dark"] .panel-intro h1,
+:root[data-theme="dark"] .turn-card h1,
+:root[data-theme="dark"] .direction-copy strong,
+:root[data-theme="dark"] .result-name strong,
+:root[data-theme="dark"] .summary-metric strong,
+:root[data-theme="dark"] .selected-destination,
+:root[data-theme="dark"] .origin-button,
+:root[data-theme="dark"] .navigation-stat strong,
+:root[data-theme="dark"] .footer-estimate strong,
+:root[data-theme="dark"] .navigation-drawer-toggle,
+:root[data-theme="dark"] .navigation-drawer-label,
+:root[data-theme="dark"] .empty-route strong {
+  color: #e5ece8 !important;
+}
+
+:root[data-theme="dark"] .panel-intro p,
+:root[data-theme="dark"] .turn-card p,
+:root[data-theme="dark"] .field-label,
+:root[data-theme="dark"] .navigation-stat span,
+:root[data-theme="dark"] .navigation-directions .directions-heading,
+:root[data-theme="dark"] .empty-route p,
+:root[data-theme="dark"] .panel-footer,
+:root[data-theme="dark"] .map-location-label {
+  color: #a3aea7 !important;
+}
+
+:root[data-theme="dark"] .result-row,
+:root[data-theme="dark"] .app-menu-item,
+:root[data-theme="dark"] .app-menu-back,
+:root[data-theme="dark"] .speech-language-button,
+:root[data-theme="dark"] .selected-destination button,
+:root[data-theme="dark"] .map-control-button,
+:root[data-theme="dark"] .app-menu-trigger,
+:root[data-theme="dark"] .map-brand-chip,
+:root[data-theme="dark"] .floating-route-pill,
+:root[data-theme="dark"] .empty-route,
+:root[data-theme="dark"] .navigation-panel--active .turn-card-arrow {
+  border-color: #35413a;
+  background: #202a25;
+  color: #dce5df;
+}
+
+:root[data-theme="dark"] .result-row:hover,
+:root[data-theme="dark"] .app-menu-item:hover,
+:root[data-theme="dark"] .app-menu-back:hover,
+:root[data-theme="dark"] .selected-destination button:hover,
+:root[data-theme="dark"] .map-control-button:hover {
+  background: #2a3730;
+}
+
+:root[data-theme="dark"] .app-menu-item > svg:first-child,
+:root[data-theme="dark"] .app-menu-back svg,
+:root[data-theme="dark"] .map-control-button:hover,
+:root[data-theme="dark"] .floating-route-pill svg {
+  color: #8eb5dc;
+}
+
+:root[data-theme="dark"] .app-menu-item > svg:last-child,
+:root[data-theme="dark"] .navigation-panel--active .navigation-drawer-toggle svg {
+  color: #9aa79f;
+}
+
+:root[data-theme="dark"] .navigation-panel--active .navigation-footer,
+:root[data-theme="dark"] .navigation-panel--active > .navigation-drawer {
+  border-color: #303c35;
+}
+
+:root[data-theme="dark"] .navigation-panel--active .navigation-drawer-grip {
+  background: #59675e;
+}
+
+:root[data-theme="dark"] .route-summary {
+  background: #202a25 !important;
+}
+
+:root[data-theme="dark"] .result-icon {
+  background: #26384a;
+  color: #9bc5f0;
+}
+
+:root[data-theme="dark"] .travel-mode-button,
+:root[data-theme="dark"] .swap-stops-button,
+:root[data-theme="dark"] .origin-location-button {
+  border-color: #35413a;
+  background: #202a25;
+  color: #c6d2ca;
+}
+
+:root[data-theme="dark"] .travel-mode-button--active {
+  border-color: #456789;
+  background: #26384a;
+  color: #a6ccf3;
+  box-shadow: inset 0 0 0 1px #456789;
+}
+
+:root[data-theme="dark"] .swap-stops-button:not(:disabled):hover,
+:root[data-theme="dark"] .origin-location-button:hover {
+  border-color: #456789;
+  background: #2b3d4d;
+  color: #b2d2f3;
+}
+
+:root[data-theme="dark"] .speech-language-button--active {
+  border-color: #456789;
+  background: #26384a;
+  color: #a6ccf3;
+}
+
+:root[data-theme="dark"] .navigation-panel--active .navigation-drawer-toggle {
+  background: #19211d;
+}
+
+:root[data-theme="dark"] .navigation-stat .estimate-duration,
+:root[data-theme="dark"] .footer-estimate .estimate-duration {
+  color: #9bc5f0 !important;
+}
+
+:root[data-theme="dark"] .navigation-stat .estimate-distance,
+:root[data-theme="dark"] .footer-estimate .estimate-distance {
+  color: #78c59f !important;
+}
+
+:root[data-theme="dark"] .stop-button,
+:root[data-theme="dark"] .navigation-panel--active .stop-button {
+  border-color: #573734;
+  background: #3a2725;
+  color: #f19a90;
+}
+
+:root[data-theme="dark"] .stop-button:hover,
+:root[data-theme="dark"] .navigation-panel--active .stop-button:hover {
+  background: #4a2d2a;
+}
+
+:root[data-theme="dark"] .direction-row--current {
+  background: #233246;
+}
+
+:root[data-theme="dark"] .turn-card {
+  background: #202d26 !important;
+}
+
+:root[data-theme="dark"] .map-status-banner,
+:root[data-theme="dark"] .destination-reached-banner {
+  border-color: #35413a;
+  box-shadow: 0 8px 28px #0000004d;
+}
+
+:root[data-theme="dark"] button:focus-visible,
+:root[data-theme="dark"] input:focus-visible {
+  outline-color: #8eb5dc;
 }
