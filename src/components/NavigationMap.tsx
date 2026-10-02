@@ -2,13 +2,20 @@ import { useEffect, useRef, useState } from 'react'
 import type { Map as LeafletMap, Marker, Polyline } from 'leaflet'
 import type { NavigationRoute, Point } from '@/lib/navigation'
 
+export type ZoomRequest = { id: number; direction: -1 | 1 }
+
 type NavigationMapProps = {
   origin: Point | null
   destination: Point | null
   currentLocation: Point | null
   route: NavigationRoute | null
   isNavigating: boolean
+  followLocation: boolean
+  headingUpEnabled: boolean
+  heading: number | null
   centerRequest: number
+  zoomRequest: ZoomRequest
+  onManualPan: () => void
 }
 
 const fallbackCenter: [number, number] = [36.1911, 44.0092]
@@ -19,25 +26,35 @@ export function NavigationMap({
   currentLocation,
   route,
   isNavigating,
+  followLocation,
+  headingUpEnabled,
+  heading,
   centerRequest,
+  zoomRequest,
+  onManualPan,
 }: NavigationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<LeafletMap | null>(null)
   const [mapReady, setMapReady] = useState(false)
+  const onManualPanRef = useRef(onManualPan)
   const cameraStateRef = useRef({
     origin: null as Point | null,
+    destination: null as Point | null,
     currentLocation: null as Point | null,
     route: null as NavigationRoute | null,
     isNavigating: false,
+    followLocation: true,
     centerRequest: 0,
   })
-  const cameraInitializedRef = useRef(false)
+  const lastZoomRequestRef = useRef(0)
   const layersRef = useRef<{
     origin: Marker | null
     destination: Marker | null
     location: Marker | null
     route: Polyline | null
   }>({ origin: null, destination: null, location: null, route: null })
+
+  onManualPanRef.current = onManualPan
 
   useEffect(() => {
     let disposed = false
@@ -50,16 +67,20 @@ export function NavigationMap({
         zoomControl: false,
         attributionControl: true,
         minZoom: 8,
+        maxZoom: 19,
+        zoomSnap: 1,
+        zoomDelta: 1,
+        touchZoom: true,
         rotate: true,
         touchRotate: true,
         dragRotate: true,
         shiftKeyRotate: true,
       }).setView(fallbackCenter, 13)
-      leaflet.control.zoom({ position: 'bottomright' }).addTo(map)
+      map.on('dragstart', () => onManualPanRef.current())
       leaflet
         .tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           maxZoom: 19,
-          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> Mitwirkende',
         })
         .addTo(map)
       mapRef.current = map
@@ -77,10 +98,31 @@ export function NavigationMap({
 
   useEffect(() => {
     const map = mapRef.current
+    if (!map || !mapReady) return
+    if (zoomRequest.id === lastZoomRequestRef.current) return
+    lastZoomRequestRef.current = zoomRequest.id
+    if (zoomRequest.direction > 0) map.zoomIn(1)
+    else map.zoomOut(1)
+  }, [zoomRequest, mapReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    if (isNavigating && headingUpEnabled && heading !== null) {
+      map.setHeading(heading, { ease: 0.18, deadzone: 2 })
+    } else {
+      map.setHeading(null)
+      map.setBearing(0)
+    }
+  }, [heading, headingUpEnabled, isNavigating, mapReady])
+
+  useEffect(() => {
+    const map = mapRef.current
     if (!map) return
     void import('leaflet').then((leaflet) => {
+      if (mapRef.current !== map) return
       const layers = layersRef.current
-      for (const layer of [layers.origin, layers.destination, layers.location, layers.route]) {
+      for (const layer of [layers.origin, layers.destination, layers.route]) {
         if (layer) map.removeLayer(layer)
       }
 
@@ -96,28 +138,52 @@ export function NavigationMap({
           })
           .addTo(map)
 
-      layersRef.current.origin = origin ? makeMarker(origin, 'map-marker map-marker--origin', 'Destpêk') : null
+      layersRef.current.origin = origin ? makeMarker(origin, 'map-marker map-marker--origin', 'Startpunkt') : null
       layersRef.current.destination = destination
-        ? makeMarker(destination, 'map-marker map-marker--destination', 'Armanc')
-        : null
-      layersRef.current.location = currentLocation
-        ? makeMarker(currentLocation, 'map-marker map-marker--location', 'Cihê te')
+        ? makeMarker(destination, 'map-marker map-marker--destination', 'Ziel')
         : null
       layersRef.current.route = route
         ? leaflet
             .polyline(
               route.geometry.coordinates.map(([lon, lat]) => leaflet.latLng(lat, lon)),
-              { color: '#4285f4', weight: 4, opacity: 0.92, lineCap: 'round', lineJoin: 'round' },
+              { color: '#1a73e8', weight: 6, opacity: 0.94, lineCap: 'round', lineJoin: 'round' },
             )
             .addTo(map)
         : null
-
     })
-  }, [origin, destination, currentLocation, route, mapReady])
+  }, [origin, destination, route, mapReady])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    if (!map || !mapReady) return
+    void import('leaflet').then((leaflet) => {
+      if (mapRef.current !== map) return
+      const locationMarker = layersRef.current.location
+      if (!currentLocation) {
+        if (locationMarker) map.removeLayer(locationMarker)
+        layersRef.current.location = null
+        return
+      }
+      if (locationMarker) {
+        locationMarker.setLatLng([currentLocation.lat, currentLocation.lon])
+        return
+      }
+      layersRef.current.location = leaflet
+        .marker([currentLocation.lat, currentLocation.lon], {
+          icon: leaflet.divIcon({
+            className: 'map-marker map-marker--location',
+            html: '<span aria-label="Ihr Standort"></span>',
+            iconSize: [28, 28],
+            iconAnchor: [14, 14],
+          }),
+        })
+        .addTo(map)
+    })
+  }, [currentLocation, mapReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
 
     const previous = cameraStateRef.current
     const navigationStarted = isNavigating && !previous.isNavigating
@@ -126,44 +192,42 @@ export function NavigationMap({
     const routeChanged = route !== previous.route
     const locationChanged = currentLocation !== previous.currentLocation
     const originChanged = origin !== previous.origin
-    const focus = currentLocation ?? origin
+    const destinationChanged = destination !== previous.destination
+    const focus = currentLocation ?? origin ?? destination
     const showRoute = () => {
       if (!route?.geometry.coordinates.length) return false
       map.fitBounds(
         route.geometry.coordinates.map(([lon, lat]) => [lat, lon] as [number, number]),
-        { padding: [52, 52], maxZoom: 13 },
+        { padding: [52, 52], maxZoom: 15, animate: true },
       )
       return true
     }
 
-    if (!cameraInitializedRef.current) {
-      cameraInitializedRef.current = true
-      if (isNavigating && route) {
-        map.setBearing(0)
-        showRoute()
-      } else if (focus) {
-        map.setView([focus.lat, focus.lon], 15)
-      }
+    if (centerRequested && focus) {
+      map.flyTo([focus.lat, focus.lon], undefined, { animate: true, duration: 0.65 })
     } else if (navigationStarted) {
-      map.setBearing(0)
-      showRoute()
-    } else if (centerRequested) {
-      map.setBearing(0)
-      if (focus) map.flyTo([focus.lat, focus.lon], isNavigating ? 18 : 15, { animate: true })
+      if (focus) map.setView([focus.lat, focus.lon], Math.max(map.getZoom(), 16), { animate: true })
+      else showRoute()
     } else if (navigationStopped && route) {
       showRoute()
-    } else if (!isNavigating && routeChanged && !route && focus) {
-      map.flyTo([focus.lat, focus.lon], 15, { animate: true })
-    } else if (!isNavigating && !route && (locationChanged || originChanged) && focus) {
+    } else if (!isNavigating && routeChanged && route) {
+      showRoute()
+    } else if (destinationChanged && destination && !route) {
+      map.flyTo([destination.lat, destination.lon], 15, { animate: true })
+    } else if (isNavigating && followLocation && locationChanged && currentLocation) {
+      map.panTo([currentLocation.lat, currentLocation.lon], { animate: true, duration: 0.65 })
+    } else if (!isNavigating && followLocation && !route && (originChanged || locationChanged) && focus) {
       map.setView([focus.lat, focus.lon], 15, { animate: true })
+    } else if (!cameraStateRef.current.origin && !cameraStateRef.current.destination && focus) {
+      map.setView([focus.lat, focus.lon], 15)
     }
 
-    cameraStateRef.current = { origin, currentLocation, route, isNavigating, centerRequest }
-  }, [origin, currentLocation, route, isNavigating, centerRequest, mapReady])
+    cameraStateRef.current = { origin, destination, currentLocation, route, isNavigating, followLocation, centerRequest }
+  }, [origin, destination, currentLocation, route, isNavigating, followLocation, centerRequest, mapReady])
 
   return (
     <div className="map-canvas">
-      <div className="map-inner" ref={containerRef} role="application" aria-label="Nexşeya OpenStreetMap" />
+      <div className="map-inner" ref={containerRef} role="application" aria-label="OpenStreetMap-Karte" />
     </div>
   )
 }

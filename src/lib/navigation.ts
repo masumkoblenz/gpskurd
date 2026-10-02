@@ -3,6 +3,8 @@ export type Point = {
   lon: number
 }
 
+export type TravelMode = 'driving' | 'foot'
+
 export type RouteStep = {
   distance: number
   duration: number
@@ -18,6 +20,7 @@ export type RouteStep = {
 }
 
 export type NavigationRoute = {
+  mode: TravelMode
   distance: number
   duration: number
   geometry: {
@@ -44,24 +47,28 @@ export async function findPlaces(query: string): Promise<SearchResult[]> {
     format: 'jsonv2',
     addressdetails: '1',
     limit: '5',
-    'accept-language': 'ku,en',
+    'accept-language': 'de,en',
   })
   const response = await fetch(`https://nominatim.openstreetmap.org/search?${params}`)
-  if (!response.ok) throw new Error('Cihê nehat dîtin. Dîsa biceribîne.')
+  if (!response.ok) throw new Error('Ort konnte nicht gefunden werden. Bitte erneut versuchen.')
   return response.json()
 }
 
-export async function getRoute(start: Point, end: Point): Promise<NavigationRoute> {
+export async function getRoute(start: Point, end: Point, mode: TravelMode = 'driving'): Promise<NavigationRoute> {
   const coordinates = `${start.lon},${start.lat};${end.lon},${end.lat}`
+  const routingService = mode === 'foot'
+    ? 'https://routing.openstreetmap.de/routed-foot'
+    : 'https://router.project-osrm.org'
   const response = await fetch(
-    `https://router.project-osrm.org/route/v1/driving/${coordinates}?overview=full&steps=true&geometries=geojson`,
+    `${routingService}/route/v1/driving/${coordinates}?overview=full&steps=true&geometries=geojson`,
   )
-  if (!response.ok) throw new Error('Rê nehat hesabkirin. Dîsa biceribîne.')
+  if (!response.ok) throw new Error('Route konnte nicht berechnet werden. Bitte erneut versuchen.')
   const data = await response.json()
   if (data.code !== 'Ok' || !data.routes?.[0]) {
-    throw new Error('Rê di navbera van cihan de nehat dîtin.')
+    throw new Error('Zwischen diesen Orten wurde keine Route gefunden.')
   }
   return {
+    mode,
     distance: data.routes[0].distance,
     duration: data.routes[0].duration,
     geometry: data.routes[0].geometry,
@@ -76,10 +83,10 @@ export function formatDistance(meters: number) {
 
 export function formatDuration(seconds: number) {
   const minutes = Math.max(1, Math.round(seconds / 60))
-  if (minutes < 60) return `${minutes} xulek`
+  if (minutes < 60) return `${minutes} Min.`
   const hours = Math.floor(minutes / 60)
   const remainder = minutes % 60
-  return remainder ? `${hours} demjimêr ${remainder} xulek` : `${hours} demjimêr`
+  return remainder ? `${hours} Std. ${remainder} Min.` : `${hours} Std.`
 }
 
 export function formatClockDuration(seconds: number) {
@@ -97,7 +104,7 @@ export function placeSubtitle(place: SearchResult) {
   return place.display_name.split(',').slice(1, 4).map((part) => part.trim()).filter(Boolean).join(', ')
 }
 
-function localizedTurn(step: RouteStep) {
+function kurmanciTurn(step: RouteStep) {
   const modifier = step.maneuver.modifier
   if (step.maneuver.type === 'arrive') return 'Gihîştî cihê xwe.'
   if (step.maneuver.type === 'depart') return 'Destpê bike.'
@@ -112,15 +119,43 @@ function localizedTurn(step: RouteStep) {
   return 'li pêş biçe.'
 }
 
-export function instructionFor(step: RouteStep, includeDistance = true) {
-  const turn = localizedTurn(step)
+export function kurmanciInstructionFor(step: RouteStep, includeDistance = true, distanceOverride?: number) {
+  const turn = kurmanciTurn(step)
   if (step.maneuver.type === 'depart' || step.maneuver.type === 'arrive') return turn
-  if (!includeDistance || step.distance < 10) return turn
+  const distanceMeters = distanceOverride ?? step.distance
+  if (!includeDistance || distanceMeters < 10) return turn
   const distance =
-    step.distance < 1_000
-      ? `${Math.max(50, Math.round(step.distance / 50) * 50)} metreyan`
-      : `${(step.distance / 1_000).toFixed(1).replace('.', ',')} kilometroyan`
+    distanceMeters < 1_000
+      ? `${Math.max(50, Math.round(distanceMeters / 50) * 50)} metreyan`
+      : `${(distanceMeters / 1_000).toFixed(1).replace('.', ',')} kilometroyan`
   return `Di ${distance} de ${turn}`
+}
+
+function germanTurn(step: RouteStep) {
+  const modifier = step.maneuver.modifier
+  if (step.maneuver.type === 'arrive') return 'Ziel erreicht.'
+  if (step.maneuver.type === 'depart') return 'Fahren Sie los.'
+  if (step.maneuver.type === 'roundabout' || step.maneuver.type === 'rotary') {
+    return 'Nehmen Sie die passende Ausfahrt im Kreisverkehr.'
+  }
+  if (step.maneuver.type === 'uturn' || modifier === 'uturn') return 'Wenden Sie.'
+  if (modifier?.includes('left')) return 'links abbiegen.'
+  if (modifier?.includes('right')) return 'rechts abbiegen.'
+  if (modifier === 'straight') return 'geradeaus weiterfahren.'
+  return 'weiterfahren.'
+}
+
+export function germanInstructionFor(step: RouteStep, includeDistance = true, distanceOverride?: number) {
+  const turn = germanTurn(step)
+  if (step.maneuver.type === 'depart' || step.maneuver.type === 'arrive') return turn
+  const distanceMeters = distanceOverride ?? step.distance
+  if (!includeDistance || distanceMeters < 10) {
+    return `${turn.charAt(0).toLocaleUpperCase('de-DE')}${turn.slice(1)}`
+  }
+  const distance = distanceMeters < 1_000
+    ? `${Math.max(50, Math.round(distanceMeters / 50) * 50)} m`
+    : `${(distanceMeters / 1_000).toFixed(1).replace('.', ',')} km`
+  return `In ${distance} ${turn}`
 }
 
 export function distanceToRoute(point: Point, coordinates: [number, number][]) {
