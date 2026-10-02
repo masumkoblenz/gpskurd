@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LatLngBounds, Map as LeafletMap, Marker, Polyline, TileLayer } from 'leaflet'
 import type { NavigationRoute, Point } from '@/lib/navigation'
+import type { LaneGuidance } from '@/lib/lane-guidance'
 import { locationMarkup, routePinMarkup, trafficSignalLabel, trafficSignalMarkup, type TrafficSignalNode } from '@/lib/map-markers'
 
 import NavigationMap3D from './NavigationMap3D'
@@ -21,6 +22,8 @@ type NavigationMapProps = {
   zoomRequest: ZoomRequest
   onManualPan: () => void
   threeDEnabled: boolean
+  perspectivePitch: number
+  laneGuidance: LaneGuidance | null
   onThreeDUnavailable: () => void
 }
 
@@ -69,6 +72,8 @@ export function NavigationMap({
   zoomRequest,
   onManualPan,
   threeDEnabled,
+  perspectivePitch,
+  laneGuidance,
   onThreeDUnavailable,
 }: NavigationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -273,6 +278,48 @@ export function NavigationMap({
 
   useEffect(() => {
     const map = mapRef.current
+    if (!map || !mapReady || !laneGuidance) return
+    let disposed = false
+    let layer: import('leaflet').GeoJSON | undefined
+    let removeZoomListener: (() => void) | undefined
+    void import('leaflet').then((leaflet) => {
+      if (disposed) return
+      if (!map.getPane('navigation-lanes')) {
+        const pane = map.createPane('navigation-lanes')
+        pane.style.zIndex = '450'
+        pane.style.pointerEvents = 'none'
+      }
+      layer = leaflet.geoJSON(laneGuidance.mapData, {
+        pane: 'navigation-lanes',
+        interactive: false,
+        style: (feature) => ({
+          color: feature?.properties.kind === 'surface' ? 'transparent' : '#ffffff',
+          weight: feature?.properties.kind === 'surface' ? 0 : feature?.properties.kind === 'arrow' ? 2.5 : 1.2,
+          opacity: 0.95,
+          fillColor: feature?.properties.recommended ? '#188038' : '#414950',
+          fillOpacity: 0.9,
+          lineCap: 'round',
+          lineJoin: 'round',
+        }),
+      })
+      const updateVisibility = () => {
+        if (!layer) return
+        if (map.getZoom() >= 17) layer.addTo(map)
+        else layer.remove()
+      }
+      map.on('zoomend', updateVisibility)
+      updateVisibility()
+      removeZoomListener = () => map.off('zoomend', updateVisibility)
+    })
+    return () => {
+      disposed = true
+      removeZoomListener?.()
+      layer?.remove()
+    }
+  }, [laneGuidance, mapReady])
+
+  useEffect(() => {
+    const map = mapRef.current
     if (!map || !mapReady) return
     if (zoomRequest.id === lastZoomRequestRef.current) return
     lastZoomRequestRef.current = zoomRequest.id
@@ -435,6 +482,8 @@ export function NavigationMap({
           <NavigationMap3D
             leafletMap={mapRef.current}
             enabled={threeDEnabled}
+            perspectivePitch={perspectivePitch}
+            laneGuidance={laneGuidance}
             visible={threeDVisible}
             origin={origin}
             destination={destination}
@@ -454,7 +503,6 @@ export function NavigationMap({
               setThreeDVisible(visible)
             }}
             onExited={() => {
-              setThreeDMounted(false)
               setThreeDVisible(false)
             }}
             onUnavailable={() => {

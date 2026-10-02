@@ -42,6 +42,18 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
 .driving-perspective-reset { position: absolute; z-index: 510; bottom: 190px; left: 20px; }
 .map-control-button { display: grid; width: 42px; height: 42px; place-items: center; border: 0; border-radius: 12px; background: #fbfcf8; box-shadow: 0 5px 20px #20332c24; color: #2d6959; cursor: pointer; transition: transform .18s, background .18s; }
 .map-control-button:hover { transform: translateY(-2px); background: white; }
+.map-control-button.map-perspective-button { gap: 2px; align-content: center; font-size: 10px; font-weight: 750; }
+.lane-guidance { position: absolute; z-index: 490; bottom: 250px; left: 20px; width: min(280px, calc(100vw - 100px)); padding: 12px; border: 1px solid #ffffffda; border-radius: 16px; background: #fffffff2; box-shadow: 0 5px 20px #20332c24; pointer-events: none; }
+.lane-guidance-heading { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; color: #35424c; font-size: 12px; }
+.lane-guidance-heading span { color: #5f6368; }
+.lane-guidance-road { display: flex; overflow: hidden; border: 2px solid #f4f6f8; border-radius: 8px; background: #414950; }
+.lane-guidance-lane { position: relative; display: grid; min-width: 0; flex: 1; height: 76px; place-items: center; border-right: 2px dashed #ffffffa6; color: #fff; }
+.lane-guidance-lane:last-child { border-right: 0; }
+.lane-guidance-lane--recommended { background: #188038; }
+.lane-guidance-lane svg { width: 100%; max-width: 50px; height: 56px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.lane-guidance-check { position: absolute; right: 3px; bottom: 3px; display: grid; width: 15px; height: 15px; place-items: center; border-radius: 50%; background: #fff; color: #188038; font-size: 11px; font-weight: 800; }
+.lane-guidance p { margin: 7px 0 0; color: #188038; font-size: 11px; font-weight: 650; }
+@media (max-width: 700px) { .lane-guidance { bottom: calc(245px + env(safe-area-inset-bottom)); left: 16px; padding: 10px; } }
 
 .navigation-panel { position: absolute; z-index: 500; top: 18px; bottom: 18px; left: 18px; display: flex; width: min(404px, calc(100vw - 36px)); flex-direction: column; overflow: auto; border: 1px solid #ffffffb8; border-radius: 19px; background: var(--paper); box-shadow: 0 14px 56px #1a30261c; scrollbar-width: thin; scrollbar-color: #d2ddd6 transparent; }
 .navigation-panel > .search-results-view { order: 2; }

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { LatLngBounds, Map as LeafletMap, ZoomAnimEvent } from 'leaflet'
 import type { GeoJSONSource, Map as VectorMap, Marker, MapLibreEvent } from 'maplibre-gl'
 import type { NavigationRoute, Point } from '@/lib/navigation'
+import type { LaneGuidance } from '@/lib/lane-guidance'
 import { locationMarkup, routePinMarkup, trafficSignalLabel, trafficSignalMarkup, type TrafficSignalNode } from '@/lib/map-markers'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
@@ -9,6 +10,8 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 type NavigationMap3DProps = {
   leafletMap: LeafletMap
   enabled: boolean
+  perspectivePitch: number
+  laneGuidance: LaneGuidance | null
   visible: boolean
   origin: Point | null
   destination: Point | null
@@ -185,6 +188,18 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
                 paint: { 'line-color': casing ? '#ffffff' : '#2875e5', 'line-width': casing ? 14 : 7, 'line-opacity': casing ? 0.98 : 0.97 },
               }, labelLayer)
             }
+            map.addSource('navigation-lanes', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, tolerance: 0 })
+            map.addLayer({
+              id: 'navigation-lane-surfaces', type: 'fill', source: 'navigation-lanes', minzoom: 16,
+              filter: ['==', ['get', 'kind'], 'surface'],
+              paint: { 'fill-color': ['case', ['get', 'recommended'], '#188038', '#414950'], 'fill-opacity': 0.9 },
+            }, labelLayer)
+            map.addLayer({
+              id: 'navigation-lane-markings', type: 'line', source: 'navigation-lanes', minzoom: 16,
+              filter: ['!=', ['get', 'kind'], 'surface'],
+              layout: { 'line-cap': 'round', 'line-join': 'round' },
+              paint: { 'line-color': '#ffffff', 'line-width': ['case', ['==', ['get', 'kind'], 'arrow'], 2.5, 1.2], 'line-opacity': 0.95 },
+            }, labelLayer)
             setReady(true)
           } catch {
             fail()
@@ -224,7 +239,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
     let exitTimeout: ReturnType<typeof setTimeout> | undefined
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const initialPitch = map.getPitch()
-    const targetPitch = !props.enabled || worldView ? 0 : props.isNavigating ? 45 : 50
+    const targetPitch = !props.enabled || worldView ? 0 : props.isNavigating ? props.perspectivePitch : 50
     const duration = reduceMotion ? 0 : props.enabled ? 420 : 320
     const startedAt = performance.now()
     if (props.enabled) propsRef.current.onVisibleChange(true)
@@ -250,7 +265,14 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
       pitchAnimationRef.current = null
       if (exitTimeout) clearTimeout(exitTimeout)
     }
-  }, [props.enabled, props.isNavigating, props.drivingPerspectiveRequest, ready, worldView])
+  }, [props.enabled, props.perspectivePitch, props.isNavigating, props.drivingPerspectiveRequest, ready, worldView])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready) return
+    const source = map.getSource('navigation-lanes') as GeoJSONSource
+    source.setData(props.laneGuidance?.mapData ?? { type: 'FeatureCollection', features: [] })
+  }, [props.laneGuidance, ready])
 
   useEffect(() => {
     const map = mapRef.current

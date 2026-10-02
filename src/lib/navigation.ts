@@ -5,6 +5,11 @@ export type Point = {
 
 export type TravelMode = 'driving' | 'foot'
 
+export type RouteLane = {
+  indications: string[]
+  valid: boolean
+}
+
 export type RouteStep = {
   distance: number
   duration: number
@@ -18,6 +23,10 @@ export type RouteStep = {
   geometry: {
     coordinates: [number, number][]
   }
+  intersections?: {
+    location: [number, number]
+    lanes?: RouteLane[]
+  }[]
 }
 
 export type NavigationRoute = {
