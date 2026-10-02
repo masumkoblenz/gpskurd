@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { Map as LeafletMap, Marker, Polyline } from 'leaflet'
+import type { LatLngBounds, Map as LeafletMap, Marker, Polyline } from 'leaflet'
 import type { NavigationRoute, Point } from '@/lib/navigation'
 
 export type ZoomRequest = { id: number; direction: -1 | 1 }
@@ -20,6 +20,43 @@ type NavigationMapProps = {
 }
 
 const fallbackCenter: [number, number] = [36.1911, 44.0092]
+const trafficSignalEndpoint = 'https://overpass-api.de/api/interpreter'
+const minimumTrafficSignalZoom = 14
+const minimumTrafficSignalRequestInterval = 60_000
+
+type TrafficSignalNode = {
+  type: string
+  id: number
+  lat: number
+  lon: number
+  tags?: Record<string, string>
+}
+
+async function fetchTrafficSignals(bounds: LatLngBounds, signal: AbortSignal) {
+  const southWest = bounds.getSouthWest()
+  const northEast = bounds.getNorthEast()
+  const box = [southWest.lat, southWest.lng, northEast.lat, northEast.lng]
+    .map((value) => value.toFixed(5))
+    .join(',')
+  const query = `[out:json][timeout:15];(node["highway"="traffic_signals"](${box});node["highway"="crossing"]["crossing"="traffic_signals"](${box});node["crossing:signals"="yes"](${box}););out body;`
+  const response = await fetch(trafficSignalEndpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+    body: new URLSearchParams({ data: query }),
+    signal,
+  })
+  if (!response.ok) throw new Error(`Overpass request failed: ${response.status}`)
+  const payload = (await response.json()) as { elements?: TrafficSignalNode[] }
+  return (payload.elements ?? []).filter((element) =>
+    element.type === 'node' &&
+    Number.isFinite(element.id) &&
+    Number.isFinite(element.lat) &&
+    Number.isFinite(element.lon) &&
+    (element.tags?.highway === 'traffic_signals' ||
+      element.tags?.crossing === 'traffic_signals' ||
+      element.tags?.['crossing:signals'] === 'yes'),
+  )
+}
 
 export function NavigationMap({
   origin,
@@ -37,6 +74,7 @@ export function NavigationMap({
 }: NavigationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<LeafletMap | null>(null)
+  const hasTrafficSignalContextRef = useRef(Boolean(currentLocation || origin || destination || route))
   const [mapReady, setMapReady] = useState(false)
   const onManualPanRef = useRef(onManualPan)
   const manualCameraChangeRef = useRef(false)
@@ -61,10 +99,14 @@ export function NavigationMap({
   }>({ origin: null, destination: null, location: null, routeCasing: null, route: null })
 
   onManualPanRef.current = onManualPan
+  hasTrafficSignalContextRef.current = hasTrafficSignalContextRef.current || Boolean(currentLocation || origin || destination || route)
 
   useEffect(() => {
     let disposed = false
     let resizeObserver: ResizeObserver | undefined
+    let trafficSignalDebounceTimer: ReturnType<typeof setTimeout> | undefined
+    let trafficSignalThrottleTimer: ReturnType<typeof setTimeout> | undefined
+    let trafficSignalRequestController: AbortController | null = null
     void (async () => {
       const leaflet = await import('leaflet')
       await import('@tomickigrzegorz/leaflet-rotate')
@@ -83,11 +125,16 @@ export function NavigationMap({
         shiftKeyRotate: true,
       }).setView(fallbackCenter, 13)
       const exitDrivingPerspective = () => {
+        hasTrafficSignalContextRef.current = true
         manualCameraChangeRef.current = true
         onManualPanRef.current()
       }
+      const enableTrafficSignalRequests = () => {
+        hasTrafficSignalContextRef.current = true
+      }
       map.on('dragstart', exitDrivingPerspective)
       map.on('rotatestart', exitDrivingPerspective)
+      map.on('zoomstart', enableTrafficSignalRequests)
       leaflet
         .tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           className: 'navigation-basemap-tiles',
@@ -97,12 +144,102 @@ export function NavigationMap({
         .addTo(map)
       mapRef.current = map
       setMapReady(true)
-      resizeObserver = new ResizeObserver(() => map.invalidateSize())
+      const trafficSignalLayer = leaflet.layerGroup().addTo(map)
+      let trafficSignalCoverage: LatLngBounds | null = null
+      let trafficSignalRequestInFlight = false
+      let lastTrafficSignalRequestAt = 0
+
+      let refreshTrafficSignals: () => Promise<void> = async () => undefined
+      const scheduleTrafficSignalRefresh = () => {
+        if (!hasTrafficSignalContextRef.current) return
+        if (trafficSignalDebounceTimer) clearTimeout(trafficSignalDebounceTimer)
+        trafficSignalDebounceTimer = setTimeout(() => {
+          trafficSignalDebounceTimer = undefined
+          const waitTime = minimumTrafficSignalRequestInterval - (Date.now() - lastTrafficSignalRequestAt)
+          if (waitTime > 0) {
+            if (!trafficSignalThrottleTimer) {
+              trafficSignalThrottleTimer = setTimeout(() => {
+                trafficSignalThrottleTimer = undefined
+                scheduleTrafficSignalRefresh()
+              }, waitTime)
+            }
+            return
+          }
+          void refreshTrafficSignals()
+        }, 650)
+      }
+
+      refreshTrafficSignals = async () => {
+        if (disposed || mapRef.current !== map) return
+        if (map.getZoom() < minimumTrafficSignalZoom) {
+          trafficSignalLayer.clearLayers()
+          trafficSignalCoverage = null
+          return
+        }
+
+        const visibleBounds = map.getBounds()
+        if (trafficSignalCoverage?.contains(visibleBounds)) return
+        if (trafficSignalRequestInFlight) return
+
+        const requestedBounds = visibleBounds.pad(0.5)
+        const controller = new AbortController()
+        trafficSignalRequestController = controller
+        trafficSignalRequestInFlight = true
+        lastTrafficSignalRequestAt = Date.now()
+        try {
+          const trafficSignals = await fetchTrafficSignals(requestedBounds, controller.signal)
+          if (disposed || mapRef.current !== map) return
+          if (map.getZoom() < minimumTrafficSignalZoom) {
+            trafficSignalLayer.clearLayers()
+            trafficSignalCoverage = null
+            return
+          }
+          if (!requestedBounds.contains(map.getBounds())) {
+            trafficSignalCoverage = null
+            scheduleTrafficSignalRefresh()
+            return
+          }
+
+          trafficSignalLayer.clearLayers()
+          const renderedSignalIds = new Set<number>()
+          for (const trafficSignal of trafficSignals) {
+            if (renderedSignalIds.has(trafficSignal.id)) continue
+            renderedSignalIds.add(trafficSignal.id)
+            leaflet.marker([trafficSignal.lat, trafficSignal.lon], {
+              icon: leaflet.divIcon({
+                className: 'traffic-signal-marker',
+                html: '<span role="img" aria-label="Ampel"><svg viewBox="0 0 20 29" aria-hidden="true"><rect x="3" y="1" width="14" height="22" rx="5" fill="#293440" stroke="#fff" stroke-width="1.5"/><circle cx="10" cy="7" r="2.2" fill="#e45151"/><circle cx="10" cy="12" r="2.2" fill="#f0b84b"/><circle cx="10" cy="17" r="2.2" fill="#52a879"/><path d="M10 23v5" stroke="#293440" stroke-width="2" stroke-linecap="round"/></svg></span>',
+                iconSize: [20, 29],
+                iconAnchor: [10, 14],
+              }),
+              interactive: false,
+              keyboard: false,
+              title: 'Ampel',
+            }).addTo(trafficSignalLayer)
+          }
+          trafficSignalCoverage = requestedBounds
+        } catch {
+          trafficSignalCoverage = null
+        } finally {
+          if (trafficSignalRequestController === controller) trafficSignalRequestController = null
+          trafficSignalRequestInFlight = false
+        }
+      }
+
+      map.on('moveend zoomend rotateend', scheduleTrafficSignalRefresh)
+      scheduleTrafficSignalRefresh()
+      resizeObserver = new ResizeObserver(() => {
+        map.invalidateSize()
+        scheduleTrafficSignalRefresh()
+      })
       resizeObserver.observe(containerRef.current)
     })()
     return () => {
       disposed = true
       resizeObserver?.disconnect()
+      if (trafficSignalDebounceTimer) clearTimeout(trafficSignalDebounceTimer)
+      if (trafficSignalThrottleTimer) clearTimeout(trafficSignalThrottleTimer)
+      trafficSignalRequestController?.abort()
       mapRef.current?.remove()
       mapRef.current = null
     }
@@ -234,11 +371,11 @@ export function NavigationMap({
     }
 
     if (drivingPerspectiveRequested && focus) {
+      manualCameraChangeRef.current = false
       map.setBearing(0)
-      if (headingUpEnabled && heading !== null) {
-        map.setHeading(heading, { ease: 0.18, deadzone: 2 })
-      }
-      map.flyTo([focus.lat, focus.lon], navigationZoomRef.current ?? Math.max(map.getZoom(), 17), { animate: true, duration: 0.65 })
+      map.setHeading(headingUpEnabled && heading !== null ? heading : null, { ease: 0.18, deadzone: 2 })
+      const zoom = isNavigating ? navigationZoomRef.current ?? Math.max(map.getZoom(), 17) : undefined
+      map.flyTo([focus.lat, focus.lon], zoom, { animate: true, duration: 0.65 })
     } else if (centerRequested && focus) {
       map.flyTo([focus.lat, focus.lon], undefined, { animate: true, duration: 0.65 })
     } else if (navigationStarted) {
