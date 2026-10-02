@@ -76,10 +76,25 @@ export function formatDistance(meters: number) {
 
 export function formatDuration(seconds: number) {
   const minutes = Math.max(1, Math.round(seconds / 60))
-  if (minutes < 60) return `${minutes} deq`
+  if (minutes < 60) return `${minutes} xulek`
   const hours = Math.floor(minutes / 60)
   const remainder = minutes % 60
-  return remainder ? `${hours} saet ${remainder} deq` : `${hours} saet`
+  return remainder ? `${hours} demjimêr ${remainder} xulek` : `${hours} demjimêr`
+}
+
+export function formatClockDuration(seconds: number) {
+  const minutes = Math.max(0, Math.round(seconds / 60))
+  const hours = Math.floor(minutes / 60)
+  const remainingMinutes = minutes % 60
+  return `${String(hours).padStart(2, '0')}:${String(remainingMinutes).padStart(2, '0')}`
+}
+
+export function placeTitle(place: SearchResult) {
+  return place.display_name.split(',')[0]?.trim() || place.display_name
+}
+
+export function placeSubtitle(place: SearchResult) {
+  return place.display_name.split(',').slice(1, 4).map((part) => part.trim()).filter(Boolean).join(', ')
 }
 
 function localizedTurn(step: RouteStep) {

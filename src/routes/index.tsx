@@ -1,6 +1,10 @@
 import { createFileRoute } from '@tanstack/react-router'
 import {
+  ArrowLeft,
+  ArrowUpDown,
   ArrowUpRight,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   Compass,
   LocateFixed,
@@ -10,9 +14,7 @@ import {
   Play,
   RotateCcw,
   Search,
-  Square,
   Volume2,
-  VolumeX,
   X,
 } from 'lucide-react'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
@@ -21,10 +23,13 @@ import {
   distanceBetween,
   distanceToRoute,
   findPlaces,
+  formatClockDuration,
   formatDistance,
   formatDuration,
   getRoute,
   instructionFor,
+  placeSubtitle,
+  placeTitle,
   type NavigationRoute,
   type Point,
   type RouteStep,
@@ -35,34 +40,75 @@ export const Route = createFileRoute('/')({
   component: NavigationPage,
 })
 
+function ManeuverArrow({ step }: { step: RouteStep }) {
+  const maneuver = step.maneuver
+  const modifier = maneuver.modifier ?? ''
+  const isUturn = maneuver.type === 'uturn' || modifier === 'uturn'
+  const isLeft = !isUturn && modifier.includes('left')
+  const isRight = !isUturn && modifier.includes('right')
+  const directionLabel = isUturn ? 'Vegere' : isLeft ? 'Ber bi çepê bizivire' : isRight ? 'Ber bi rastê bizivire' : 'Rast biçe'
+
+  return (
+    <svg className="maneuver-arrow" viewBox="0 0 32 32" fill="none" role="img" aria-label={directionLabel}>
+      {isUturn ? (
+        <>
+          <path d="M21 28V18a8 8 0 0 0-16 0v10" />
+          <path d="m1 23 4 5 4-5" />
+        </>
+      ) : isLeft ? (
+        <>
+          <path d="M22 28V17a10 10 0 0 0-10-10H5" />
+          <path d="m11 2-6 5 6 5" />
+        </>
+      ) : isRight ? (
+        <>
+          <path d="M10 28V17A10 10 0 0 1 20 7h7" />
+          <path d="m21 2 6 5-6 5" />
+        </>
+      ) : (
+        <>
+          <path d="M16 28V5" />
+          <path d="m8 13 8-8 8 8" />
+        </>
+      )}
+    </svg>
+  )
+}
+
 function NavigationPage() {
   const [origin, setOrigin] = useState<Point | null>(null)
+  const [originName, setOriginName] = useState('')
   const [currentLocation, setCurrentLocation] = useState<Point | null>(null)
   const [destination, setDestination] = useState<Point | null>(null)
   const [destinationName, setDestinationName] = useState('')
   const [route, setRoute] = useState<NavigationRoute | null>(null)
   const [query, setQuery] = useState('')
+  const [originQuery, setOriginQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
+  const [originResults, setOriginResults] = useState<SearchResult[]>([])
+  const [activeSearch, setActiveSearch] = useState<'destination' | 'origin' | null>(null)
   const [searching, setSearching] = useState(false)
+  const [searchingOrigin, setSearchingOrigin] = useState(false)
   const [routing, setRouting] = useState(false)
-  const [error, setError] = useState('')
-  const [speechError, setSpeechError] = useState('')
-  const [speechStatus, setSpeechStatus] = useState('')
   const [isNavigating, setIsNavigating] = useState(false)
+  const [directionsExpanded, setDirectionsExpanded] = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
-  const [speechTestRequest, setSpeechTestRequest] = useState(0)
+  const [mapCenterRequest, setMapCenterRequest] = useState(0)
   const [stepIndex, setStepIndex] = useState(0)
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const activeSearchResults = activeSearch === 'origin' ? originResults : results
+  const activeSearchLoading = activeSearch === 'origin' ? searchingOrigin : searching
   const routeRef = useRef(route)
   const routeRequestRef = useRef(0)
+  const searchRequestRef = useRef(0)
   const lastRerouteRef = useRef(0)
   const reroutingRef = useRef(false)
   const stepIndexRef = useRef(stepIndex)
+  const drawerTouchStartYRef = useRef<number | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null)
   const ttsWorkerRef = useRef<Worker | null>(null)
   const speechRequestRef = useRef(0)
-  const handledSpeechTestRef = useRef(0)
   routeRef.current = route
   stepIndexRef.current = stepIndex
 
@@ -72,10 +118,8 @@ function NavigationPage() {
       audioContextRef.current = audioContext
       if (audioContext.state === 'suspended') await audioContext.resume()
       if (audioContext.state !== 'running') throw new Error('audio_context_not_running')
-      setSpeechError('')
       return audioContext
     } catch {
-      setSpeechError('Deng di vê gerokê de nayê çalakkirin.')
       return null
     }
   }
@@ -83,21 +127,33 @@ function NavigationPage() {
   const requestLocation = () => {
     if (!navigator.geolocation) {
       setGpsStatus('error')
-      setError('GPS di vê gerokê de nayê piştgirîkirin.')
       return
     }
     setGpsStatus('loading')
-    setError('')
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
         const point = { lat: coords.latitude, lon: coords.longitude }
         setCurrentLocation(point)
-        setOrigin(point)
+        if (isNavigating) setMapCenterRequest((request) => request + 1)
+        if (!isNavigating) {
+          searchRequestRef.current += 1
+          setActiveSearch(null)
+          setResults([])
+          setSearching(false)
+          setSearchingOrigin(false)
+          routeRequestRef.current += 1
+          setOrigin(point)
+          setOriginName('Cihê min')
+          setOriginQuery('')
+          setOriginResults([])
+          setRoute(null)
+          setRouting(false)
+          setStepIndex(0)
+        }
         setGpsStatus('ready')
       },
       () => {
         setGpsStatus('error')
-        setError('Cihê te nehat bidestxistin. Destûra GPS-ê bide û dîsa biceribîne.')
       },
       { enableHighAccuracy: true, timeout: 15_000, maximumAge: 10_000 },
     )
@@ -107,43 +163,86 @@ function NavigationPage() {
     event.preventDefault()
     if (searching) return
     const term = query.trim()
-    if (term.length < 2) {
-      setError('Ji kerema xwe navê cihê binivîse.')
-      return
-    }
+    if (term.length < 2) return
+    const requestId = ++searchRequestRef.current
+    setActiveSearch('destination')
+    setOriginResults([])
     setSearching(true)
-    setError('')
     setResults([])
     try {
-      setResults(await findPlaces(term))
-    } catch (searchError) {
-      setError(searchError instanceof Error ? searchError.message : 'Di lêgerînê de xeletî çêbû.')
+      const places = await findPlaces(term)
+      if (searchRequestRef.current === requestId) setResults(places)
+    } catch {
+      return
     } finally {
-      setSearching(false)
+      if (searchRequestRef.current === requestId) setSearching(false)
     }
   }
 
+  const searchOriginPlaces = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (searchingOrigin) return
+    const term = originQuery.trim()
+    if (term.length < 2) return
+    const requestId = ++searchRequestRef.current
+    setActiveSearch('origin')
+    setResults([])
+    setSearchingOrigin(true)
+    setOriginResults([])
+    try {
+      const places = await findPlaces(term)
+      if (searchRequestRef.current === requestId) setOriginResults(places)
+    } catch {
+      return
+    } finally {
+      if (searchRequestRef.current === requestId) setSearchingOrigin(false)
+    }
+  }
+
+  const closeSearchResults = () => {
+    searchRequestRef.current += 1
+    setActiveSearch(null)
+    setResults([])
+    setOriginResults([])
+    setSearching(false)
+    setSearchingOrigin(false)
+  }
+
+  const chooseOrigin = (place: SearchResult) => {
+    searchRequestRef.current += 1
+    setActiveSearch(null)
+    routeRequestRef.current += 1
+    setOrigin({ lat: Number(place.lat), lon: Number(place.lon) })
+    setOriginName(place.display_name.split(',').slice(0, 2).join(', '))
+    setOriginQuery('')
+    setOriginResults([])
+    setRoute(null)
+    setRouting(false)
+    setIsNavigating(false)
+    setStepIndex(0)
+  }
+
   const chooseDestination = async (place: SearchResult) => {
+    searchRequestRef.current += 1
+    setActiveSearch(null)
     const requestId = ++routeRequestRef.current
     const point = { lat: Number(place.lat), lon: Number(place.lon) }
     setDestination(point)
     setDestinationName(place.display_name.split(',').slice(0, 2).join(', '))
     setQuery('')
     setResults([])
+    setOriginResults([])
     setRoute(null)
     setIsNavigating(false)
     setStepIndex(0)
-    setError('')
     if (!origin) return
 
     setRouting(true)
     try {
       const nextRoute = await getRoute(origin, point)
       if (routeRequestRef.current === requestId) setRoute(nextRoute)
-    } catch (routeError) {
-      if (routeRequestRef.current === requestId) {
-        setError(routeError instanceof Error ? routeError.message : 'Rê nehat hesabkirin.')
-      }
+    } catch {
+      return
     } finally {
       if (routeRequestRef.current === requestId) setRouting(false)
     }
@@ -153,7 +252,6 @@ function NavigationPage() {
     if (!origin || !destination) return
     const requestId = ++routeRequestRef.current
     setRouting(true)
-    setError('')
     setIsNavigating(false)
     try {
       const nextRoute = await getRoute(origin, destination)
@@ -161,10 +259,8 @@ function NavigationPage() {
         setRoute(nextRoute)
         setStepIndex(0)
       }
-    } catch (routeError) {
-      if (routeRequestRef.current === requestId) {
-        setError(routeError instanceof Error ? routeError.message : 'Rê nehat hesabkirin.')
-      }
+    } catch {
+      return
     } finally {
       if (routeRequestRef.current === requestId) setRouting(false)
     }
@@ -173,7 +269,6 @@ function NavigationPage() {
   useEffect(() => {
     if (!isNavigating) return
     if (!navigator.geolocation) {
-      setError('GPS di vê gerokê de nayê piştgirîkirin.')
       setIsNavigating(false)
       return
     }
@@ -202,29 +297,21 @@ function NavigationPage() {
             lastRerouteRef.current = now
             reroutingRef.current = true
             const requestId = ++routeRequestRef.current
-            setError('Rê ji bo cihê nû tê hesabkirin…')
             void getRoute(point, destination)
               .then((newRoute) => {
                 if (routeRequestRef.current === requestId) {
                   setRoute(newRoute)
                   setStepIndex(0)
-                  setError('')
                 }
               })
-              .catch(() => {
-                if (routeRequestRef.current === requestId) {
-                  setError('Nehat ku rê nû were hesabkirin. Li ser rê bimîne.')
-                }
-              })
+              .catch(() => undefined)
               .finally(() => {
                 reroutingRef.current = false
               })
           }
         }
       },
-      () => {
-        setError('GPS qut bû. Ji kerema xwe destûra cihê kontrol bike.')
-      },
+      () => {},
       { enableHighAccuracy: true, maximumAge: 2_000, timeout: 15_000 },
     )
     return () => navigator.geolocation.clearWatch(watchId)
@@ -232,9 +319,7 @@ function NavigationPage() {
 
   const activeStep: RouteStep | undefined = route?.steps[Math.min(stepIndex, (route?.steps.length ?? 1) - 1)]
   useEffect(() => {
-    const isTestRequest = speechTestRequest !== handledSpeechTestRef.current
-    if (isTestRequest) handledSpeechTestRef.current = speechTestRequest
-    if (!isTestRequest && (!isNavigating || !voiceEnabled || !activeStep)) return
+    if (!isNavigating || !voiceEnabled || !activeStep) return
     const audioContext = audioContextRef.current
     if (!audioContext) return
 
@@ -254,8 +339,6 @@ function NavigationPage() {
       audioSourceRef.current = null
     }
     stopCurrentAudio()
-    setSpeechError('')
-    setSpeechStatus('Deng tê amadekirin…')
 
     const handleWorkerMessage = (event: MessageEvent<{
       type: 'status' | 'progress' | 'cached' | 'audio' | 'error'
@@ -269,36 +352,7 @@ function NavigationPage() {
       const message = event.data
       if (requestCancelled || message.requestId !== requestId) return
 
-      if (message.type === 'status') {
-        setSpeechStatus(
-          message.status === 'loading-runtime'
-            ? 'Amûra dengê Kurmancî tê barkirin…'
-            : message.status === 'loading-model'
-              ? 'Modela Kurmancî tê amadekirin…'
-              : 'Deng tê çêkirin…',
-        )
-        return
-      }
-
-      if (message.type === 'progress') {
-        const progress = message.total ? ` ${Math.round((message.loaded ?? 0) / message.total * 100)}%` : ''
-        setSpeechStatus(`Modela Kurmancî tê daxistin…${progress}`)
-        return
-      }
-
-      if (message.type === 'cached') {
-        setSpeechStatus('Modela Kurmancî tê amadekirin…')
-        return
-      }
-
-      if (message.type === 'error') {
-        setSpeechStatus('')
-        setSpeechError('Deng nehat çêkirin. Girêdana înternetê kontrol bike û dîsa biceribîne.')
-        return
-      }
-
-      if (!message.samples || !message.sampleRate) return
-      setSpeechStatus(isTestRequest ? 'Deng tê xwendin…' : '')
+      if (message.type !== 'audio' || !message.samples || !message.sampleRate) return
 
       void (async () => {
         if (audioContext.state === 'suspended') await audioContext.resume()
@@ -313,29 +367,19 @@ function NavigationPage() {
         source.onended = () => {
           if (audioSourceRef.current === source) audioSourceRef.current = null
           source.disconnect()
-          if (isTestRequest) setSpeechStatus('Ceribandina dengê bi ser ket.')
         }
         audioSourceRef.current = source
         source.start()
-      })().catch(() => {
-        if (!requestCancelled) {
-          setSpeechStatus('')
-          setSpeechError('Deng di vê gerokê de nayê çalakkirin.')
-        }
-      })
+      })().catch(() => undefined)
     }
 
-    const handleWorkerError = () => {
-      if (requestCancelled) return
-      setSpeechStatus('')
-      setSpeechError('Deng nehat çêkirin. Girêdana înternetê kontrol bike û dîsa biceribîne.')
-    }
+    const handleWorkerError = () => undefined
 
     worker.addEventListener('message', handleWorkerMessage)
     worker.addEventListener('error', handleWorkerError)
     worker.postMessage({
       requestId,
-      text: isTestRequest ? 'Ev ceribandina dengê Rêber e. Rêya te xweş be.' : instructionFor(activeStep!),
+      text: instructionFor(activeStep),
       type: 'speak',
     })
 
@@ -346,7 +390,7 @@ function NavigationPage() {
       worker.removeEventListener('error', handleWorkerError)
       stopCurrentAudio()
     }
-  }, [activeStep, isNavigating, speechTestRequest, voiceEnabled])
+  }, [activeStep, isNavigating, voiceEnabled])
 
   useEffect(() => () => {
     ttsWorkerRef.current?.terminate()
@@ -358,11 +402,13 @@ function NavigationPage() {
     void prepareAudio()
     lastRerouteRef.current = Date.now()
     setStepIndex(Math.min(1, route.steps.length - 1))
+    setDirectionsExpanded(false)
     setIsNavigating(true)
   }
 
   const stopNavigation = () => {
     setIsNavigating(false)
+    setDirectionsExpanded(false)
     if (audioSourceRef.current) {
       audioSourceRef.current.stop()
       audioSourceRef.current.disconnect()
@@ -375,10 +421,6 @@ function NavigationPage() {
     setVoiceEnabled((enabled) => !enabled)
   }
 
-  const testAudio = async () => {
-    if (await prepareAudio()) setSpeechTestRequest((request) => request + 1)
-  }
-
   const clearDestination = () => {
     routeRequestRef.current += 1
     setDestination(null)
@@ -387,7 +429,36 @@ function NavigationPage() {
     setRouting(false)
     setIsNavigating(false)
     setResults([])
-    setError('')
+    setOriginResults([])
+  }
+
+  const clearOrigin = () => {
+    routeRequestRef.current += 1
+    setOrigin(null)
+    setOriginName('')
+    setOriginQuery('')
+    setOriginResults([])
+    setRoute(null)
+    setRouting(false)
+    setIsNavigating(false)
+    setStepIndex(0)
+  }
+
+  const swapStops = () => {
+    if (!origin || !destination) return
+    routeRequestRef.current += 1
+    setOrigin(destination)
+    setDestination(origin)
+    setOriginName(destinationName)
+    setDestinationName(originName || 'Cihê min')
+    setOriginQuery('')
+    setOriginResults([])
+    setRoute(null)
+    setRouting(false)
+    setIsNavigating(false)
+    setStepIndex(0)
+    setQuery('')
+    setResults([])
   }
 
   const remainingDistance = route?.steps.slice(stepIndex).reduce((total, step) => total + step.distance, 0) ?? 0
@@ -402,18 +473,44 @@ function NavigationPage() {
         currentLocation={currentLocation}
         route={route}
         isNavigating={isNavigating}
+        centerRequest={mapCenterRequest}
       />
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
         <span>Rêber</span>
       </div>
-      <div className="map-location-control">
+      <div className={`map-location-control ${isNavigating ? 'map-location-control--navigation' : ''}`}>
+        {isNavigating && (
+          <button
+            className="map-control-button"
+            type="button"
+            onClick={toggleVoice}
+            aria-label={voiceEnabled ? 'Deng rawestîne' : 'Deng çalak bike'}
+            aria-pressed={voiceEnabled}
+            title={voiceEnabled ? 'Deng çalak e' : 'Deng rawestiyaye'}
+          >
+            <span className={`audio-control-icon ${voiceEnabled ? '' : 'audio-control-icon--muted'}`}>
+              <Volume2 size={19} />
+            </span>
+          </button>
+        )}
+        {isNavigating && (
+          <button
+            className="map-control-button"
+            type="button"
+            onClick={() => setMapCenterRequest((request) => request + 1)}
+            aria-label="Nexşeyê navend bike û li bakur rast bike"
+            title="Nexşeyê navend bike û li bakur rast bike"
+          >
+            <Compass size={19} />
+          </button>
+        )}
         <button className="map-control-button" type="button" onClick={requestLocation} aria-label="Cihê min bibîne">
           {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={19} /> : <LocateFixed size={19} />}
         </button>
       </div>
 
-      <section className={`navigation-panel ${isNavigating ? 'navigation-panel--active' : ''}`}>
+      <section className={`navigation-panel ${isNavigating ? 'navigation-panel--active' : ''} ${activeSearch ? 'navigation-panel--search-results' : ''}`}>
         <header className="panel-header">
           <div className="wordmark">
             <span className="wordmark-icon"><Navigation size={17} strokeWidth={2.4} /></span>
@@ -425,45 +522,105 @@ function NavigationPage() {
 
         {isNavigating && activeStep ? (
           <div className="turn-card">
-            <div className="turn-eyebrow"><span className="turn-indicator" /> RÊBERIYA NIHA</div>
-            <h1>{instructionFor(activeStep)}</h1>
-            <p>{activeStep.name || 'Rêya sereke'}</p>
-            {(speechError || speechStatus) && <p className="speech-status" role="status">{speechError || speechStatus}</p>}
-            <div className="speech-actions">
-              <button className="voice-button" type="button" onClick={toggleVoice}>
-                {voiceEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}
-                <span>{voiceEnabled ? 'Deng çalak e' : 'Deng rawestiyaye'}</span>
-              </button>
-              <button className="speech-test-button" type="button" onClick={() => void testAudio()}>
-                <Play size={14} /> <span>Deng ceribîne</span>
-              </button>
+            <span className="turn-card-arrow"><ManeuverArrow step={activeStep} /></span>
+            <div className="turn-card-copy">
+              <div className="turn-eyebrow"><span className="turn-indicator" /> RÊBERIYA NIHA</div>
+              <h1>{instructionFor(activeStep)}</h1>
+              <p>{activeStep.name || 'Rêya sereke'}</p>
             </div>
           </div>
-        ) : (
+        ) : !activeSearch ? (
           <div className="panel-intro">
             <div className="eyebrow"><Compass size={14} /> LI SER RÊ</div>
             <h1>Bi aramî bigere.</h1>
             <p>Armanca xwe bibêje. Rêber rêya te dibîne.</p>
-            {(speechError || speechStatus) && <p className="speech-status" role="status">{speechError || speechStatus}</p>}
-            <button className="speech-test-button" type="button" onClick={() => void testAudio()}>
-              <Play size={14} /> <span>Deng ceribîne</span>
-            </button>
           </div>
-        )}
+        ) : null}
 
+        {activeSearch ? (
+          <section className="search-results-view" aria-label="Cihên hatine dîtin" aria-live="polite">
+            <header className="search-results-view-header">
+              <button className="search-results-back" type="button" onClick={closeSearchResults} aria-label="Vegere lêgerînê">
+                <ArrowLeft size={18} />
+              </button>
+              <div className="search-results-heading">
+                <strong>{activeSearch === 'origin' ? 'CIHÊN DESTPÊKÊ' : 'CIHÊN ARMANCÊ'}</strong>
+                <small>{activeSearchLoading ? 'Li cihan digere…' : `${activeSearchResults.length} cih hat dîtin`}</small>
+              </div>
+            </header>
+            <div className="search-results-list" role="list">
+              {activeSearchLoading ? (
+                <div className="search-results-status"><LoaderCircle className="spin" size={19} /><span>Li cihan digere…</span></div>
+              ) : activeSearchResults.length > 0 ? (
+                activeSearchResults.map((place) => (
+                  <div className="search-result-item" key={place.place_id} role="listitem">
+                    <button
+                      className="result-row"
+                      type="button"
+                      onClick={() => activeSearch === 'origin' ? chooseOrigin(place) : void chooseDestination(place)}
+                    >
+                      <span className="result-icon"><MapPin size={17} /></span>
+                      <span className="result-name"><strong>{placeTitle(place)}</strong><small>{placeSubtitle(place)}</small></span>
+                      <ArrowUpRight size={16} className="result-arrow" />
+                    </button>
+                  </div>
+                ))
+              ) : (
+                <div className="search-results-status"><Search size={18} /><span>Tu cih nehat dîtin.</span></div>
+              )}
+            </div>
+          </section>
+        ) : (
         <div className="route-form-block">
           <div className="route-stops">
-            <div className="stop-rail"><span className="stop-dot stop-dot--start" /><span className="stop-line" /><span className="stop-dot stop-dot--end" /></div>
-            <div className="stop-fields">
-              <div className="origin-field">
-                <span className="field-label">JI</span>
-                <button className="origin-button" type="button" onClick={requestLocation}>
-                  <span>{gpsStatus === 'loading' ? 'Cihê te tê dîtin…' : origin ? 'Cihê min' : 'Cihê xwe bibîne'}</span>
-                  {gpsStatus === 'loading' ? <LoaderCircle size={16} className="spin" /> : <LocateFixed size={16} />}
+            <div className="stop-rail">
+              {destination && <span className="stop-dot stop-dot--start" />}
+              {destination && <span className="stop-line" />}
+              {origin && destination && (
+                <button className="swap-stops-button" type="button" onClick={swapStops} aria-label="Destpêk û armancê biguherîne" title="Destpêk û armancê biguherîne">
+                  <ArrowUpDown size={16} />
                 </button>
-              </div>
+              )}
+              <span className="stop-dot stop-dot--end" />
+            </div>
+            <div className="stop-fields">
+              {destination && (
+                <div className="origin-field">
+                  {origin ? (
+                    <span className="field-label">JI</span>
+                  ) : (
+                    <label className="field-label" htmlFor="origin-search">JI</label>
+                  )}
+                  {origin ? (
+                    <div className="selected-destination selected-origin">
+                      <span>{originName || 'Cihê min'}</span>
+                      <button type="button" onClick={clearOrigin} aria-label="Cihê destpêkê biguherîne"><X size={16} /></button>
+                    </div>
+                  ) : (
+                    <form className="search-form origin-search-form" onSubmit={searchOriginPlaces}>
+                      <input
+                        id="origin-search"
+                        value={originQuery}
+                        onChange={(event) => setOriginQuery(event.target.value)}
+                        placeholder="Cihê destpêkê bigere"
+                        autoComplete="off"
+                      />
+                      <button className="search-submit" type="submit" aria-label="Cihê destpêkê bigere" disabled={searchingOrigin}>
+                        {searchingOrigin ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}
+                      </button>
+                      <button className="origin-location-button" type="button" onClick={requestLocation} aria-label="Cihê min wek destpêkê bikar bîne" title="Cihê min wek destpêkê bikar bîne">
+                        {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={17} /> : <LocateFixed size={17} />}
+                      </button>
+                    </form>
+                  )}
+                </div>
+              )}
               <div className="destination-field">
-                <label className="field-label" htmlFor="destination-search">Bİ</label>
+                {destination ? (
+                  <span className="field-label">Bİ</span>
+                ) : (
+                  <label className="field-label" htmlFor="destination-search">Bİ</label>
+                )}
                 {destination ? (
                   <div className="selected-destination">
                     <span>{destinationName}</span>
@@ -486,66 +643,62 @@ function NavigationPage() {
               </div>
             </div>
           </div>
-          {results.length > 0 && (
-            <div className="search-results">
-              <div className="results-label">CIHÊN NÊZÎK</div>
-              {results.map((place) => (
-                <button className="result-row" key={place.place_id} type="button" onClick={() => void chooseDestination(place)}>
-                  <span className="result-icon"><MapPin size={16} /></span>
-                  <span className="result-name">{place.display_name}</span>
-                  <ArrowUpRight size={15} className="result-arrow" />
-                </button>
-              ))}
-            </div>
-          )}
-          {error && <div className={`notice ${error.includes('tê hesabkirin') ? 'notice--working' : ''}`} role="status">{error}</div>}
-          {destination && !origin && !route && !routing && (
-            <div className="location-prompt">
-              <LocateFixed size={17} /> <span>Ji bo hesabkirina rêyê cihê xwe destnîşan bike.</span>
-            </div>
-          )}
-          {destination && origin && !route && (
-            <button className="primary-button" type="button" onClick={() => void calculateRoute()} disabled={routing}>
-              {routing ? <LoaderCircle className="spin" size={17} /> : <Navigation size={17} />}
-              <span>{routing ? 'Rê tê hesabkirin…' : 'Rê hesab bike'}</span>
-              {!routing && <ArrowUpRight size={17} className="button-arrow" />}
-            </button>
-          )}
         </div>
-
-        {route && !isNavigating && (
-          <section className="route-summary" aria-live="polite">
-            <div className="summary-topline"><span>RÊYA PÊŞNIYAR</span><button type="button" onClick={() => void calculateRoute()} aria-label="Rê ji nû ve hesab bike"><RotateCcw size={15} /></button></div>
-            <div className="summary-main">
-              <div className="summary-metric"><strong>{formatDuration(route.duration)}</strong><span>DEMÊ RÊWÎTIYÊ</span></div>
-              <div className="summary-divider" />
-              <div className="summary-metric"><strong>{formatDistance(route.distance)}</strong><span>DIRÊJAHÎ</span></div>
-            </div>
-            <button className="primary-button start-button" type="button" onClick={startNavigation}>
-              <Play size={16} fill="currentColor" /> <span>Rêberiyê dest pê bike</span><ArrowUpRight size={17} className="button-arrow" />
-            </button>
-          </section>
         )}
 
-        {route && (
-          <div className="directions-section">
-            <div className="directions-heading"><span>{isNavigating ? 'PÊŞIYA TE' : 'RÊBERÎ'}</span><span>{upcomingSteps.length} gav</span></div>
-            <div className="directions-list">
-              {upcomingSteps.map((step, index) => (
-                <div className={`direction-row ${index === 0 && isNavigating ? 'direction-row--current' : ''}`} key={`${step.maneuver.type}-${step.maneuver.location.join('-')}-${stepIndex + index}`}>
-                  <span className="direction-number">{index === 0 && isNavigating ? <Navigation size={15} /> : String(stepIndex + index + 1).padStart(2, '0')}</span>
-                  <span className="direction-copy"><strong>{instructionFor(step, !isNavigating || index > 0)}</strong><small>{step.name || 'Rêya sereke'}</small></span>
-                  <span className="direction-distance">{formatDistance(step.distance)}</span>
-                </div>
-              ))}
-            </div>
+        {destination && origin && !isNavigating && !activeSearch && (
+          <div className="route-action-footer">
+            <button
+              className={`primary-button ${route ? 'start-button' : ''}`}
+              type="button"
+              onClick={() => {
+                if (route) startNavigation()
+                else void calculateRoute()
+              }}
+              disabled={routing}
+            >
+              {routing ? <LoaderCircle className="spin" size={17} /> : route ? <Play size={16} fill="currentColor" /> : <Navigation size={17} />}
+              <span>{routing ? 'Rê tê hesabkirin…' : route ? 'Rêberiyê dest pê bike' : 'Rê hesab bike'}</span>
+              {!routing && <ArrowUpRight size={17} className="button-arrow" />}
+            </button>
           </div>
         )}
 
         {isNavigating && route && (
-          <div className="navigation-footer">
-            <div className="footer-estimate"><Clock3 size={16} /><strong>{formatDuration(remainingDuration)}</strong><span>·</span><span>{formatDistance(remainingDistance)} mayî</span></div>
-            <button type="button" className="stop-button" onClick={stopNavigation}><Square size={13} fill="currentColor" /> Dawî bîne</button>
+          <div className={`navigation-drawer ${directionsExpanded ? 'navigation-drawer--expanded' : ''}`}>
+            <button className="navigation-drawer-toggle" type="button" onClick={() => setDirectionsExpanded((expanded) => !expanded)} aria-expanded={directionsExpanded} aria-controls="active-directions">
+              <span className="navigation-drawer-grip" />
+              {directionsExpanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+              <span className="navigation-drawer-label">{directionsExpanded ? 'RÊBERÎ VEŞÊRE' : 'RÊBERÎ NÎŞAN BIDE'}</span>
+            </button>
+            <div className="directions-section navigation-directions" id="active-directions" hidden={!directionsExpanded}>
+              <div className="directions-heading"><span>PÊŞIYA TE</span><span>{upcomingSteps.length} gav</span></div>
+              <div className="directions-list">
+                {upcomingSteps.map((step, index) => (
+                  <div className={`direction-row ${index === 0 ? 'direction-row--current' : ''}`} key={`${step.maneuver.type}-${step.maneuver.location.join('-')}-${stepIndex + index}`}>
+                    <span className="direction-number"><ManeuverArrow step={step} /></span>
+                    <span className="direction-copy"><strong>{instructionFor(step, index > 0)}</strong><small>{step.name || 'Rêya sereke'}</small></span>
+                    <span className="direction-distance">{formatDistance(step.distance)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div
+              className="navigation-footer"
+              onTouchStart={(event) => { drawerTouchStartYRef.current = event.touches[0]?.clientY ?? null }}
+              onTouchEnd={(event) => {
+                const startY = drawerTouchStartYRef.current
+                const endY = event.changedTouches[0]?.clientY
+                if (startY !== null && endY !== undefined) {
+                  if (endY < startY - 36) setDirectionsExpanded(true)
+                  if (endY > startY + 36) setDirectionsExpanded(false)
+                }
+                drawerTouchStartYRef.current = null
+              }}
+            >
+              <div className="footer-estimate"><Clock3 size={16} /><strong className="estimate-duration">{formatClockDuration(remainingDuration)}</strong><span>·</span><span className="estimate-distance">{formatDistance(remainingDistance)} mayî</span></div>
+              <button type="button" className="stop-button" onClick={stopNavigation} aria-label="Dawî bîne" title="Dawî bîne"><X size={20} strokeWidth={2.5} /></button>
+            </div>
           </div>
         )}
 
@@ -563,8 +716,34 @@ function NavigationPage() {
       </section>
 
       {route && !isNavigating && (
-        <div className="floating-route-pill"><Clock3 size={15} /><strong>{formatDuration(route.duration)}</strong><span>·</span><span>{formatDistance(route.distance)}</span></div>
+        <section className="route-results-panel" aria-label="Encama rê û rêberî" aria-live="polite">
+          <section className="route-summary">
+            <div className="summary-topline"><span>RÊYA PÊŞNIYAR</span><button type="button" onClick={() => void calculateRoute()} aria-label="Rê ji nû ve hesab bike" disabled={routing}><RotateCcw size={15} /></button></div>
+            <div className="summary-main">
+              <div className="summary-metric summary-metric--duration"><strong>{formatDuration(route.duration)}</strong><span>DEMÊ RÊWÎTIYÊ</span></div>
+              <div className="summary-divider" />
+              <div className="summary-metric summary-metric--distance"><strong>{formatDistance(route.distance)}</strong><span>DIRÊJAHÎ</span></div>
+            </div>
+          </section>
+          <div className="directions-section">
+            <div className="directions-heading"><span>RÊBERÎ</span><span>{upcomingSteps.length} gav</span></div>
+            <div className="directions-list">
+              {upcomingSteps.map((step, index) => (
+                <div className="direction-row" key={`${step.maneuver.type}-${step.maneuver.location.join('-')}-${stepIndex + index}`}>
+                  <span className="direction-number"><ManeuverArrow step={step} /></span>
+                  <span className="direction-copy"><strong>{instructionFor(step)}</strong><small>{step.name || 'Rêya sereke'}</small></span>
+                  <span className="direction-distance">{formatDistance(step.distance)}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
       )}
+
+      {route && !isNavigating && (
+        <div className="floating-route-pill"><Clock3 size={15} /><strong className="estimate-duration">{formatClockDuration(route.duration)}</strong><span>·</span><span className="estimate-distance">{formatDistance(route.distance)}</span></div>
+      )}
+
     </main>
   )
 }

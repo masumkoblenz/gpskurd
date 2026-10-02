@@ -8,6 +8,7 @@ type NavigationMapProps = {
   currentLocation: Point | null
   route: NavigationRoute | null
   isNavigating: boolean
+  centerRequest: number
 }
 
 const fallbackCenter: [number, number] = [36.1911, 44.0092]
@@ -18,10 +19,19 @@ export function NavigationMap({
   currentLocation,
   route,
   isNavigating,
+  centerRequest,
 }: NavigationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<LeafletMap | null>(null)
   const [mapReady, setMapReady] = useState(false)
+  const cameraStateRef = useRef({
+    origin: null as Point | null,
+    currentLocation: null as Point | null,
+    route: null as NavigationRoute | null,
+    isNavigating: false,
+    centerRequest: 0,
+  })
+  const cameraInitializedRef = useRef(false)
   const layersRef = useRef<{
     origin: Marker | null
     destination: Marker | null
@@ -32,11 +42,18 @@ export function NavigationMap({
   useEffect(() => {
     let disposed = false
     let resizeObserver: ResizeObserver | undefined
-    void import('leaflet').then((leaflet) => {
+    void (async () => {
+      const leaflet = await import('leaflet')
+      await import('@tomickigrzegorz/leaflet-rotate')
       if (disposed || !containerRef.current) return
       const map = leaflet.map(containerRef.current, {
         zoomControl: false,
         attributionControl: true,
+        minZoom: 8,
+        rotate: true,
+        touchRotate: true,
+        dragRotate: true,
+        shiftKeyRotate: true,
       }).setView(fallbackCenter, 13)
       leaflet.control.zoom({ position: 'bottomright' }).addTo(map)
       leaflet
@@ -49,7 +66,7 @@ export function NavigationMap({
       setMapReady(true)
       resizeObserver = new ResizeObserver(() => map.invalidateSize())
       resizeObserver.observe(containerRef.current)
-    })
+    })()
     return () => {
       disposed = true
       resizeObserver?.disconnect()
@@ -90,22 +107,59 @@ export function NavigationMap({
         ? leaflet
             .polyline(
               route.geometry.coordinates.map(([lon, lat]) => leaflet.latLng(lat, lon)),
-              { color: '#1a73e8', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' },
+              { color: '#4285f4', weight: 4, opacity: 0.92, lineCap: 'round', lineJoin: 'round' },
             )
             .addTo(map)
         : null
 
-      if (isNavigating && currentLocation) {
-        map.setView([currentLocation.lat, currentLocation.lon], 17, { animate: true })
-      } else if (route && route.geometry.coordinates.length) {
-        map.fitBounds(layersRef.current.route!.getBounds(), { padding: [52, 52], maxZoom: 15 })
-      } else if (currentLocation) {
-        map.setView([currentLocation.lat, currentLocation.lon], 15)
-      } else if (origin) {
-        map.setView([origin.lat, origin.lon], 15)
-      }
     })
-  }, [origin, destination, currentLocation, route, isNavigating, mapReady])
+  }, [origin, destination, currentLocation, route, mapReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+
+    const previous = cameraStateRef.current
+    const navigationStarted = isNavigating && !previous.isNavigating
+    const navigationStopped = !isNavigating && previous.isNavigating
+    const centerRequested = centerRequest !== previous.centerRequest
+    const routeChanged = route !== previous.route
+    const locationChanged = currentLocation !== previous.currentLocation
+    const originChanged = origin !== previous.origin
+    const focus = currentLocation ?? origin
+    const showRoute = () => {
+      if (!route?.geometry.coordinates.length) return false
+      map.fitBounds(
+        route.geometry.coordinates.map(([lon, lat]) => [lat, lon] as [number, number]),
+        { padding: [52, 52], maxZoom: 13 },
+      )
+      return true
+    }
+
+    if (!cameraInitializedRef.current) {
+      cameraInitializedRef.current = true
+      if (isNavigating && route) {
+        map.setBearing(0)
+        showRoute()
+      } else if (focus) {
+        map.setView([focus.lat, focus.lon], 15)
+      }
+    } else if (navigationStarted) {
+      map.setBearing(0)
+      showRoute()
+    } else if (centerRequested) {
+      map.setBearing(0)
+      if (focus) map.flyTo([focus.lat, focus.lon], isNavigating ? 18 : 15, { animate: true })
+    } else if (navigationStopped && route) {
+      showRoute()
+    } else if (!isNavigating && routeChanged && !route && focus) {
+      map.flyTo([focus.lat, focus.lon], 15, { animate: true })
+    } else if (!isNavigating && !route && (locationChanged || originChanged) && focus) {
+      map.setView([focus.lat, focus.lon], 15, { animate: true })
+    }
+
+    cameraStateRef.current = { origin, currentLocation, route, isNavigating, centerRequest }
+  }, [origin, currentLocation, route, isNavigating, centerRequest, mapReady])
 
   return (
     <div className="map-canvas">
