@@ -37,6 +37,7 @@ export function NavigationMap({
   const mapRef = useRef<LeafletMap | null>(null)
   const [mapReady, setMapReady] = useState(false)
   const onManualPanRef = useRef(onManualPan)
+  const manualCameraChangeRef = useRef(false)
   const cameraStateRef = useRef({
     origin: null as Point | null,
     destination: null as Point | null,
@@ -76,7 +77,12 @@ export function NavigationMap({
         dragRotate: true,
         shiftKeyRotate: true,
       }).setView(fallbackCenter, 13)
-      map.on('dragstart', () => onManualPanRef.current())
+      const exitDrivingPerspective = () => {
+        manualCameraChangeRef.current = true
+        onManualPanRef.current()
+      }
+      map.on('dragstart', exitDrivingPerspective)
+      map.on('rotatestart', exitDrivingPerspective)
       leaflet
         .tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
           maxZoom: 19,
@@ -108,11 +114,12 @@ export function NavigationMap({
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    if (isNavigating && headingUpEnabled && heading !== null) {
+    if (headingUpEnabled && heading !== null) {
       map.setHeading(heading, { ease: 0.18, deadzone: 2 })
     } else {
       map.setHeading(null)
-      map.setBearing(0)
+      if (!manualCameraChangeRef.current) map.setBearing(0)
+      manualCameraChangeRef.current = false
     }
   }, [heading, headingUpEnabled, isNavigating, mapReady])
 
