@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LatLngBounds, Map as LeafletMap, Marker, Polyline, TileLayer } from 'leaflet'
 import type { NavigationRoute, Point } from '@/lib/navigation'
-import { laneSignMarkup, type LaneGuidance } from '@/lib/lane-guidance'
 import { locationMarkup, routePinMarkup, trafficSignalLabel, trafficSignalMarkup, type TrafficSignalNode } from '@/lib/map-markers'
 
 import NavigationMap3D from './NavigationMap3D'
@@ -26,7 +25,6 @@ type NavigationMapProps = {
   onManualPan: () => void
   threeDEnabled: boolean
   perspectivePitch: number
-  laneGuidance: LaneGuidance | null
   onThreeDUnavailable: () => void
 }
 
@@ -79,7 +77,6 @@ export function NavigationMap({
   onManualPan,
   threeDEnabled,
   perspectivePitch,
-  laneGuidance,
   onThreeDUnavailable,
 }: NavigationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -285,24 +282,6 @@ export function NavigationMap({
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !mapReady || !laneGuidance) return
-    let disposed = false
-    let marker: Marker | undefined
-    void import('leaflet').then((leaflet) => {
-      if (disposed) return
-      marker = leaflet.marker([laneGuidance.location.lat, laneGuidance.location.lon], {
-        interactive: false,
-        icon: leaflet.divIcon({ className: 'map-lane-sign', html: laneSignMarkup(laneGuidance), iconSize: [Math.min(320, laneGuidance.lanes.length * 28 + 24), 70], iconAnchor: [Math.min(320, laneGuidance.lanes.length * 28 + 24) / 2, 86] }),
-      }).addTo(map)
-    })
-    return () => {
-      disposed = true
-      marker?.remove()
-    }
-  }, [laneGuidance, mapReady])
-
-  useEffect(() => {
-    const map = mapRef.current
     if (!map || !mapReady) return
     if (threeDVisible) {
       lastZoomRequestRef.current = zoomRequest.id
@@ -470,7 +449,6 @@ export function NavigationMap({
             leafletMap={mapRef.current}
             enabled={threeDEnabled}
             perspectivePitch={perspectivePitch}
-            laneGuidance={laneGuidance}
             visible={threeDVisible}
             origin={origin}
             destination={destination}

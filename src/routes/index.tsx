@@ -16,6 +16,7 @@ import {
   LoaderCircle,
   MapPin,
   Menu as MenuIcon,
+  Moon,
   Minus,
   Navigation,
   Plus,
@@ -24,15 +25,12 @@ import {
   Volume2,
   X,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { NavigationMap } from '@/components/NavigationMap'
-import LaneGuidance from '@/components/LaneGuidance'
-import { getLaneGuidance } from '@/lib/lane-guidance'
 import {
+  bearingBetween,
   createNavigationGuidance,
   distanceBetween,
-  distanceAlongRouteToEnd,
-  distanceToRoute,
   findPlaces,
   formatClockDuration,
   formatDistance,
@@ -41,14 +39,20 @@ import {
   getRoute,
   placeSubtitle,
   placeTitle,
+  projectOntoRoute,
   type NavigationGuidance,
   type NavigationRoute,
   type Point,
+  type RouteProjection,
   type RouteStep,
   type SearchResult,
   type TravelMode,
 } from '@/lib/navigation'
 import type { ZoomRequest } from '@/components/NavigationMap'
+
+const darkModeStorageKey = 'reber-dark-mode'
+const browserPreferenceIdStorageKey = 'reber-browser-preference-id'
+const browserPreferenceIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
 
 export const Route = createFileRoute('/')({
   component: NavigationPage,
@@ -156,6 +160,7 @@ function NavigationPage() {
   const [destinationName, setDestinationName] = useState('')
   const [route, setRoute] = useState<NavigationRoute | null>(null)
   const [travelMode, setTravelMode] = useState<TravelMode>('driving')
+  const [darkMode, setDarkMode] = useState(false)
   const [routeError, setRouteError] = useState('')
   const [query, setQuery] = useState('')
   const [originQuery, setOriginQuery] = useState('')
@@ -192,7 +197,15 @@ function NavigationPage() {
   const routeRequestRef = useRef(0)
   const navigationSessionRef = useRef(0)
   const searchRequestRef = useRef(0)
-  const lastRerouteRef = useRef(0)
+  const browserPreferenceIdRef = useRef<string | null>(null)
+  const preferenceRevisionRef = useRef(0)
+  const preferenceWriteRef = useRef<Promise<void>>(Promise.resolve())
+  const rerouteRetryAfterRef = useRef(0)
+  const offRouteAnchorRef = useRef<{ point: Point; accuracy: number; lastFixAt: number; count: number } | null>(null)
+  const arrivalFixesRef = useRef(0)
+  const arrivalLastFixAtRef = useRef(0)
+  const routeProgressRef = useRef<{ route: NavigationRoute; projection: RouteProjection } | null>(null)
+  const gpsAccuracyRef = useRef<number | null>(null)
   const reroutingRef = useRef(false)
   const stepIndexRef = useRef(stepIndex)
   const audioContextRef = useRef<AudioContext | null>(null)
@@ -210,7 +223,6 @@ function NavigationPage() {
   const originEditedRef = useRef(false)
   const destinationRef = useRef(destination)
   const lastLocationFixAtRef = useRef(0)
-  const lastLocationRenderRef = useRef(0)
   const headingUpRef = useRef(headingUpEnabled)
   const voiceEnabledRef = useRef(voiceEnabled)
   const speechLanguageRef = useRef(speechLanguage)
@@ -221,6 +233,82 @@ function NavigationPage() {
   routeRef.current = route
   destinationRef.current = destination
   stepIndexRef.current = stepIndex
+
+  const getBrowserPreferenceId = () => {
+    if (browserPreferenceIdRef.current) return browserPreferenceIdRef.current
+    if (typeof window === 'undefined') return null
+    try {
+      const storedId = window.localStorage.getItem(browserPreferenceIdStorageKey)
+      const browserId = storedId && browserPreferenceIdPattern.test(storedId)
+        ? storedId
+        : window.crypto.randomUUID()
+      window.localStorage.setItem(browserPreferenceIdStorageKey, browserId)
+      browserPreferenceIdRef.current = browserId
+      return browserId
+    } catch {
+      return null
+    }
+  }
+
+  const applyDarkMode = (enabled: boolean) => {
+    if (typeof document === 'undefined') return
+    document.documentElement.dataset.theme = enabled ? 'dark' : 'light'
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', enabled ? '#111714' : '#ffffff')
+  }
+
+  const toggleDarkMode = () => {
+    const nextDarkMode = !darkMode
+    const browserId = getBrowserPreferenceId()
+    preferenceRevisionRef.current += 1
+    setDarkMode(nextDarkMode)
+    applyDarkMode(nextDarkMode)
+    try {
+      window.localStorage.setItem(darkModeStorageKey, String(nextDarkMode))
+    } catch {
+      if (!browserId) return
+    }
+    if (!browserId) return
+    preferenceWriteRef.current = preferenceWriteRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        const response = await fetch('/.netlify/functions/theme-preference', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ browserId, darkMode: nextDarkMode }),
+        })
+        if (!response.ok) throw new Error('Theme preference could not be saved')
+      })
+      .catch(() => undefined)
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    let storedPreference: string | null = null
+    try {
+      storedPreference = window.localStorage.getItem(darkModeStorageKey)
+    } catch {
+      storedPreference = null
+    }
+    const cachedDarkMode = storedPreference === 'true'
+    if (storedPreference !== null) setDarkMode(cachedDarkMode)
+    applyDarkMode(cachedDarkMode)
+    const browserId = getBrowserPreferenceId()
+    if (!browserId) return () => { cancelled = true }
+    const initialRevision = preferenceRevisionRef.current
+    void fetch(`/.netlify/functions/theme-preference?browserId=${encodeURIComponent(browserId)}`)
+      .then((response) => {
+        if (!response.ok) throw new Error('Theme preference could not be loaded')
+        return response.json() as Promise<{ darkMode: boolean | null }>
+      })
+      .then(({ darkMode: savedDarkMode }) => {
+        if (cancelled || preferenceRevisionRef.current !== initialRevision || typeof savedDarkMode !== 'boolean') return
+        setDarkMode(savedDarkMode)
+        applyDarkMode(savedDarkMode)
+        window.localStorage.setItem(darkModeStorageKey, String(savedDarkMode))
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     if (!appMenuOpen) return
@@ -320,22 +408,31 @@ function NavigationPage() {
       : 'Die Route konnte nicht berechnet werden. Bitte prüfen Sie Start und Ziel und versuchen Sie es erneut.'
   }
 
-  const updateCurrentLocation = (coords: GeolocationCoordinates, forceRender = false, forceHeading = false) => {
+  const updateCurrentLocation = (coords: GeolocationCoordinates, forceHeading = false) => {
     if (!Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude)) return null
     const accuracy = coords.accuracy
     const previous = currentLocationRef.current
     const now = Date.now()
-    if (accuracy > 100) {
+    if (!Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100) {
       setGpsStatus('error')
       return null
     }
 
     const incoming = { lat: coords.latitude, lon: coords.longitude }
+    let movement = 0
+    let elapsedSeconds = 0
     if (previous) {
-      const movement = distanceBetween(previous, incoming)
-      const elapsedSeconds = Math.max(0, now - lastLocationFixAtRef.current) / 1_000
-      const plausibleMovement = Math.max(80, Math.max(8, Math.min(coords.speed ?? 20, 45)) * elapsedSeconds * 2 + accuracy * 1.5)
-      if (accuracy > 35 && movement > plausibleMovement) {
+      movement = distanceBetween(previous, incoming)
+      elapsedSeconds = Math.max(0, now - lastLocationFixAtRef.current) / 1_000
+      const defaultSpeed = travelMode === 'foot' ? 2 : 13.9
+      const reportedSpeed = coords.speed !== null && Number.isFinite(coords.speed) && coords.speed >= 0
+        ? Math.min(coords.speed, travelMode === 'foot' ? 4 : 45)
+        : defaultSpeed
+      const plausibleMovement = Math.max(
+        travelMode === 'foot' ? 18 : 35,
+        reportedSpeed * elapsedSeconds * 2 + Math.min(accuracy, 40) * 1.5,
+      )
+      if (movement > plausibleMovement && elapsedSeconds < 30) {
         return null
       }
     }
@@ -343,25 +440,26 @@ function NavigationPage() {
     currentLocationRef.current = incoming
     lastLocationFixAtRef.current = now
     setGpsStatus('ready')
-    if (forceRender || !previous || now - lastLocationRenderRef.current >= 1_800) {
-      lastLocationRenderRef.current = now
-      setCurrentLocation(incoming)
-      setGpsAccuracy(Number.isFinite(accuracy) ? accuracy : null)
-      setSpeed(coords.speed !== null && Number.isFinite(coords.speed) ? Math.max(0, coords.speed) : null)
-    }
+    gpsAccuracyRef.current = accuracy
+    setCurrentLocation(incoming)
+    setGpsAccuracy(accuracy)
+    setSpeed(coords.speed !== null && Number.isFinite(coords.speed) ? Math.max(0, coords.speed) : null)
 
     const course = coords.heading
     const minimumCourseSpeed = travelMode === 'foot' ? 0.35 : 1.2
     const maximumCourseAccuracy = travelMode === 'foot' ? 25 : 35
-    const hasReliableCourse = accuracy <= maximumCourseAccuracy && coords.speed !== null && coords.speed > minimumCourseSpeed && course !== null && Number.isFinite(course)
-    if (hasReliableCourse && (headingUpRef.current || forceHeading)) {
+    const reportedSpeed = coords.speed !== null && Number.isFinite(coords.speed) ? coords.speed : null
+    const estimatedSpeed = elapsedSeconds > 0 ? movement / elapsedSeconds : 0
+    const hasReliableGpsCourse = accuracy <= maximumCourseAccuracy && reportedSpeed !== null && reportedSpeed > minimumCourseSpeed && course !== null && Number.isFinite(course)
+    const hasReliableMovementCourse = accuracy <= maximumCourseAccuracy && previous && elapsedSeconds <= 10 &&
+      movement >= (travelMode === 'foot' ? 4 : 8) && estimatedSpeed > minimumCourseSpeed
+    const resolvedCourse = hasReliableGpsCourse ? course : hasReliableMovementCourse ? bearingBetween(previous, incoming) : null
+    if (resolvedCourse !== null && (headingUpRef.current || forceHeading)) {
       setHeading((oldHeading) => {
-        if (oldHeading === null) return course
-        const difference = Math.abs(((course - oldHeading + 540) % 360) - 180)
-        return difference > 3 ? course : oldHeading
+        if (oldHeading === null) return resolvedCourse
+        const difference = Math.abs(((resolvedCourse - oldHeading + 540) % 360) - 180)
+        return difference > 3 ? resolvedCourse : oldHeading
       })
-    } else if (headingUpRef.current || forceHeading) {
-      setHeading(null)
     }
 
     return incoming
@@ -379,7 +477,7 @@ function NavigationPage() {
     setGpsStatus('loading')
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const point = updateCurrentLocation(coords, true, Boolean(onLocated))
+        const point = updateCurrentLocation(coords, Boolean(onLocated))
         if (!point) return
         setFollowLocation(true)
         if (onLocated) onLocated(point)
@@ -406,7 +504,7 @@ function NavigationPage() {
     setGpsStatus('loading')
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const point = updateCurrentLocation(coords, true)
+        const point = updateCurrentLocation(coords)
         if (!point) return
         if (originEditedRef.current) return
         const requestId = ++routeRequestRef.current
@@ -668,13 +766,53 @@ function NavigationPage() {
 
         const activeRoute = routeRef.current
         if (activeRoute?.steps.length) {
-          const hasReachedDestination = Boolean(
-            destination && distanceBetween(point, destination) <= Math.max(30, Math.min(coords.accuracy, 50)),
-          )
-          const offRouteDistance = distanceToRoute(point, activeRoute.geometry.coordinates)
           const now = Date.now()
-          const offRouteThreshold = Math.max(65, coords.accuracy * 1.5)
-          if (offRouteDistance <= offRouteThreshold || hasReachedDestination) {
+          const previousProjection = routeProgressRef.current?.route === activeRoute
+            ? routeProgressRef.current.projection.along
+            : undefined
+          const projection = projectOntoRoute(point, activeRoute.geometry.coordinates, previousProjection)
+          const isFoot = activeRoute.mode === 'foot'
+          const reliableFix = coords.accuracy <= (isFoot ? 25 : 45)
+          const offRouteThreshold = isFoot
+            ? Math.max(18, Math.min(coords.accuracy * 1.2, 40))
+            : Math.max(35, Math.min(coords.accuracy * 1.5, 70))
+          const isOffRoute = reliableFix && Boolean(projection && projection.distance > offRouteThreshold)
+          if (isOffRoute) {
+            const anchor = offRouteAnchorRef.current
+            if (!anchor) {
+              offRouteAnchorRef.current = { point, accuracy: coords.accuracy, lastFixAt: now, count: 1 }
+            } else if (now - anchor.lastFixAt >= 750) {
+              anchor.lastFixAt = now
+              anchor.count += 1
+            }
+          } else {
+            offRouteAnchorRef.current = null
+          }
+          if (projection && !isOffRoute) routeProgressRef.current = { route: activeRoute, projection }
+
+          const arrivalDistance = destination ? distanceBetween(point, destination) : Number.POSITIVE_INFINITY
+          const arrivalRadius = isFoot ? 15 : 25
+          const accurateArrivalFix = reliableFix && coords.accuracy <= (isFoot ? 20 : 30) && arrivalDistance <= arrivalRadius
+          if (!accurateArrivalFix) {
+            arrivalFixesRef.current = 0
+            arrivalLastFixAtRef.current = 0
+          } else if (now - arrivalLastFixAtRef.current >= 750) {
+            arrivalFixesRef.current += 1
+            arrivalLastFixAtRef.current = now
+          }
+          const hasReachedDestination = arrivalFixesRef.current >= 3
+          const offRouteAnchor = offRouteAnchorRef.current
+          const requiredDeviationTravel = (isFoot ? 8 : 15) + Math.min(
+            offRouteAnchor?.accuracy ?? coords.accuracy,
+            coords.accuracy,
+            isFoot ? 20 : 35,
+          ) * 0.6
+          const hasConfirmedDeviation = Boolean(
+            offRouteAnchor && offRouteAnchor.count >= 3 && (
+              distanceBetween(offRouteAnchor.point, point) >= requiredDeviationTravel
+            ),
+          )
+          if (!hasConfirmedDeviation || hasReachedDestination) {
             const activeIndex = hasReachedDestination ? activeRoute.steps.length - 1 : stepIndexRef.current
             const currentGuidance = createNavigationGuidance(
               activeRoute,
@@ -724,11 +862,11 @@ function NavigationPage() {
 
           if (
             destination &&
-            offRouteDistance > offRouteThreshold &&
-            now - lastRerouteRef.current > 12_000 &&
+            isOffRoute &&
+            hasConfirmedDeviation &&
+            now >= rerouteRetryAfterRef.current &&
             !reroutingRef.current
           ) {
-            lastRerouteRef.current = now
             reroutingRef.current = true
             clearNavigationSpeech()
             const requestId = ++routeRequestRef.current
@@ -737,23 +875,36 @@ function NavigationPage() {
             void getRoute(point, destination, travelMode)
               .then((newRoute) => {
                 if (routeRequestRef.current === requestId) {
-                  const newGuidance = createNavigationGuidance(newRoute, point, 1, coords.accuracy)
+                  const latestPoint = currentLocationRef.current ?? point
+                  const latestAccuracy = gpsAccuracyRef.current ?? coords.accuracy
+                  const newProjection = projectOntoRoute(latestPoint, newRoute.geometry.coordinates)
+                  const newGuidance = createNavigationGuidance(newRoute, latestPoint, 1, latestAccuracy)
                   routeRef.current = newRoute
                   setRoute(newRoute)
+                  setCurrentLocation(latestPoint)
                   setGuidance(newGuidance)
+                  routeProgressRef.current = newProjection ? { route: newRoute, projection: newProjection } : null
+                  offRouteAnchorRef.current = null
+                  arrivalFixesRef.current = 0
+                  arrivalLastFixAtRef.current = 0
+                  rerouteRetryAfterRef.current = 0
                   const nextStep = newGuidance?.stepIndex ?? 0
                   stepIndexRef.current = nextStep
                   setStepIndex(nextStep)
                   announcedManeuversRef.current.clear()
                   if (newGuidance && nextStep > 0 && newGuidance.distanceMeters !== null) {
-                    announcedManeuversRef.current.set(nextStep, new Set(['early', 'repeat', 'now']))
+                    const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
+                    if (newGuidance.phase === 'repeat' || newGuidance.phase === 'now') announcedPhases.add('repeat')
+                    if (newGuidance.phase === 'now') announcedPhases.add('now')
+                    announcedManeuversRef.current.set(nextStep, announcedPhases)
                     queueNavigationSpeech(guidanceSpeechText(newGuidance), nextStep)
                   }
                 }
               })
               .catch(() => {
                 if (routeRequestRef.current === requestId) {
-                  setRouteError('Neue Route konnte nicht berechnet werden. Die Navigation wird auf der bisherigen Route fortgesetzt.')
+                  rerouteRetryAfterRef.current = Date.now() + 5_000
+                  setRouteError('Neue Route konnte nicht berechnet werden. Die Neuberechnung wird erneut versucht.')
                 }
               })
               .finally(() => {
@@ -774,9 +925,6 @@ function NavigationPage() {
 
   const activeGuidance = guidance?.route === route ? guidance : null
   const activeStep = activeGuidance?.step
-  const laneGuidance = useMemo(() => isNavigating && !destinationReached
-    ? getLaneGuidance(route, currentLocation, activeGuidance?.stepIndex ?? stepIndex)
-    : null, [isNavigating, destinationReached, route, currentLocation, activeGuidance?.stepIndex, stepIndex])
   const perspectiveLabel = mapPerspective === 'top' ? '2D' : mapPerspective === 'tilted' ? '25°' : '3D'
   const nextPerspectiveLabel = mapPerspective === 'top' ? 'Nexşeya hinekî xwar' : mapPerspective === 'tilted' ? 'Dîtina ajotinê ya 3D' : 'Nexşeya 2D ji jor'
 
@@ -944,12 +1092,16 @@ function NavigationPage() {
     if (!route || route.mode !== travelMode) return
     setAppMenuOpen(false)
     const navigationSessionId = ++navigationSessionRef.current
-    lastLocationRenderRef.current = 0
-    lastRerouteRef.current = 0
+    rerouteRetryAfterRef.current = 0
+    offRouteAnchorRef.current = null
+    arrivalFixesRef.current = 0
+    arrivalLastFixAtRef.current = 0
     const nextStep = Math.min(1, route.steps.length - 1)
     announcedManeuversRef.current.clear()
     const startPoint = currentLocationRef.current
-    const locationIsOnRoute = startPoint && distanceToRoute(startPoint, route.geometry.coordinates) <= 65
+    const initialProjection = startPoint ? projectOntoRoute(startPoint, route.geometry.coordinates) : null
+    const locationIsOnRoute = initialProjection && initialProjection.distance <= 65
+    routeProgressRef.current = locationIsOnRoute ? { route, projection: initialProjection } : null
     const initialGuidance = startPoint && locationIsOnRoute
       ? createNavigationGuidance(route, startPoint, nextStep)
       : null
@@ -988,6 +1140,9 @@ function NavigationPage() {
     setRouting(false)
     routeRequestRef.current += 1
     reroutingRef.current = false
+    offRouteAnchorRef.current = null
+    arrivalFixesRef.current = 0
+    arrivalLastFixAtRef.current = 0
     announcedManeuversRef.current.clear()
     if (!preserveSpeech) clearNavigationSpeech()
   }
@@ -1111,17 +1266,25 @@ function NavigationPage() {
     }
   }
 
-  const remainingDistance = route?.steps.slice(stepIndex).reduce((total, step) => total + step.distance, 0) ?? 0
-  const remainingDuration = route?.steps.slice(stepIndex).reduce((total, step) => total + step.duration, 0) ?? 0
-  const projectedRemainingDistance = route && currentLocation
-    ? distanceAlongRouteToEnd(currentLocation, route.geometry.coordinates)
-    : Number.NaN
-  const liveRemainingDistance = isNavigating && Number.isFinite(projectedRemainingDistance)
-    ? projectedRemainingDistance
-    : remainingDistance
-  const liveRemainingDuration = isNavigating && route && Number.isFinite(projectedRemainingDistance) && route.distance > 0
-    ? route.duration * projectedRemainingDistance / route.distance
-    : remainingDuration
+  const plannedRemainingDistance = route?.steps.slice(stepIndex).reduce((total, step) => total + step.distance, 0) ?? 0
+  const plannedRemainingDuration = route?.steps.slice(stepIndex).reduce((total, step) => total + step.duration, 0) ?? 0
+  const liveProjection = isNavigating && route && currentLocation
+    ? projectOntoRoute(
+      currentLocation,
+      route.geometry.coordinates,
+      routeProgressRef.current?.route === route ? routeProgressRef.current.projection.along : undefined,
+    )
+    : null
+  const liveRemainingDistance = isNavigating && liveProjection
+    ? liveProjection.remaining
+    : plannedRemainingDistance
+  const approachStep = route?.steps[Math.max(0, stepIndex - 1)]
+  const remainingApproachDuration = activeGuidance?.route === route && activeGuidance.distanceMeters !== null && approachStep
+    ? approachStep.duration * Math.min(1, activeGuidance.distanceMeters / Math.max(1, approachStep.distance))
+    : 0
+  const liveRemainingDuration = isNavigating && route && activeGuidance?.route === route
+    ? remainingApproachDuration + route.steps.slice(stepIndex).reduce((total, step) => total + step.duration, 0)
+    : plannedRemainingDuration
   const arrivalTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(
     new Date(Date.now() + liveRemainingDuration * 1_000),
   )
@@ -1148,6 +1311,11 @@ function NavigationPage() {
               <button className="app-menu-item app-menu-toggle" type="button" role="switch" aria-checked={threeDEnabled} onClick={() => setMapPerspective((perspective) => perspective === 'top' ? 'driving' : 'top')}>
                 <Box size={17} aria-hidden="true" />
                 <span>3D-Karte</span>
+                <span className="map-mode-switch" aria-hidden="true"><span /></span>
+              </button>
+              <button className="app-menu-item app-menu-toggle" type="button" role="switch" aria-checked={darkMode} onClick={toggleDarkMode}>
+                <Moon size={17} aria-hidden="true" />
+                <span>Dunkelmodus</span>
                 <span className="map-mode-switch" aria-hidden="true"><span /></span>
               </button>
               <button className="app-menu-item" type="button" disabled={!route} onClick={() => setAppMenuSection('directions')}>
@@ -1201,10 +1369,8 @@ function NavigationPage() {
         }}
         threeDEnabled={threeDEnabled}
         perspectivePitch={mapPerspective === 'tilted' ? 25 : 55}
-        laneGuidance={laneGuidance}
         onThreeDUnavailable={() => setMapPerspective('top')}
       />
-      {isNavigating && travelMode === 'driving' && !destinationReached && !activeSearch && <LaneGuidance guidance={laneGuidance} />}
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
         <span>Rêber</span>
