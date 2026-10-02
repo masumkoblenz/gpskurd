@@ -32,6 +32,8 @@ import {
   getRoute,
   kurmanciArrivalInstruction,
   kurmanciInstructionFor,
+  navigationAnnouncementPhase,
+  navigationAnnouncementThresholds,
   placeSubtitle,
   placeTitle,
   type NavigationRoute,
@@ -45,6 +47,29 @@ import type { ZoomRequest } from '@/components/NavigationMap'
 export const Route = createFileRoute('/')({
   component: NavigationPage,
 })
+
+const navigationWelcomeMessages = [
+  'Rêwîtiya we xweş be.',
+  'Ez hêvî dikim rêwîtiya we xweş be.',
+  'Rêwîtiya we bi xêr be.',
+  'Em amade ne, em dest pê dikin.',
+  'Xwe biparêzin û rêwîtiya we xweş be.',
+  'Ez hêvî dikim hûn bi ewlehî bigihîjin cihê xwe.',
+  'Rêya we vekirî û xweş be.',
+  'Rêwîtiya we bi ewlehî be.',
+  'Her tişt amade ye, em dest pê dikin.',
+  'Em ê niha dest bi rêwîtiyê bikin.',
+  'Bi hêdî û bi ewlehî biçin.',
+  'Ez hêvî dikim hûn bi xêr bigihîjin.',
+  'Rêya we xweş û ewle be.',
+  'Xwedê rêya we biparêze.',
+  'Rêwîtiya we aram û xweş be.',
+  'Em ji bo rêwîtiyê amade ne.',
+  'Niha em dest bi rêwîtiyê dikin.',
+  'Bi rêya xwe ve bi ewlehî biçin.',
+  'Ez ji we re rêwîtiyek xweş dixwazim.',
+  'Hûn amade ne, em dest pê dikin.',
+] as const
 
 function ManeuverArrow({ step }: { step: RouteStep }) {
   const maneuver = step.maneuver
@@ -110,9 +135,11 @@ function NavigationPage() {
   const [speechCue, setSpeechCue] = useState<{ id: number; text: string } | null>(null)
   const [speechError, setSpeechError] = useState('')
   const [mapCenterRequest, setMapCenterRequest] = useState(0)
+  const [drivingPerspectiveRequest, setDrivingPerspectiveRequest] = useState(0)
   const [stepIndex, setStepIndex] = useState(0)
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
   const [gpsMessage, setGpsMessage] = useState('')
+  const hasValidOrigin = Boolean(origin && Number.isFinite(origin.lat) && Number.isFinite(origin.lon))
   const activeSearchResults = activeSearch === 'origin' ? originResults : results
   const activeSearchLoading = activeSearch === 'origin' ? searchingOrigin : searching
   const routeRef = useRef(route)
@@ -275,7 +302,6 @@ function NavigationPage() {
     if (!navigator.geolocation) {
       setGpsStatus('error')
       setGpsMessage('GPS wird von diesem Gerät nicht unterstützt.')
-      setFollowLocation(false)
       return
     }
     setGpsStatus('loading')
@@ -290,7 +316,6 @@ function NavigationPage() {
       () => {
         setGpsStatus('error')
         setGpsMessage('Standort nicht verfügbar.')
-        setFollowLocation(false)
       },
       { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
     )
@@ -300,7 +325,7 @@ function NavigationPage() {
     originEditedRef.current = false
     if (!navigator.geolocation) {
       setGpsStatus('error')
-      setGpsMessage('GPS wird von diesem Gerät nicht unterstützt.')
+      setGpsMessage('Startposition nicht verfügbar')
       setFollowLocation(false)
       return
     }
@@ -309,7 +334,10 @@ function NavigationPage() {
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
         const point = updateCurrentLocation(coords, true)
-        if (!point) return
+        if (!point) {
+          setGpsMessage('Startposition nicht verfügbar')
+          return
+        }
         if (originEditedRef.current) return
         const requestId = ++routeRequestRef.current
         setOrigin(point)
@@ -338,7 +366,7 @@ function NavigationPage() {
       },
       () => {
         setGpsStatus('error')
-        setGpsMessage('Standort nicht verfügbar.')
+        setGpsMessage('Startposition nicht verfügbar')
         setFollowLocation(false)
       },
       { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
@@ -351,7 +379,7 @@ function NavigationPage() {
 
   const searchPlaces = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (searching) return
+    if (!hasValidOrigin || searching) return
     const term = query.trim()
     if (term.length < 2) return
     const requestId = ++searchRequestRef.current
@@ -418,6 +446,10 @@ function NavigationPage() {
 
   const editOriginInput = (value: string) => {
     originEditedRef.current = true
+    searchRequestRef.current += 1
+    setActiveSearch(null)
+    setResults([])
+    setOriginResults([])
     setOriginQuery(value)
     setOrigin(null)
     setOriginName('')
@@ -432,12 +464,15 @@ function NavigationPage() {
   }
 
   const chooseOrigin = async (place: SearchResult) => {
+    const point = { lat: Number(place.lat), lon: Number(place.lon) }
+    if (!Number.isFinite(point.lat) || !Number.isFinite(point.lon)) return
     searchRequestRef.current += 1
     setActiveSearch(null)
     routeRequestRef.current += 1
     navigationSessionRef.current += 1
     originEditedRef.current = true
-    setOrigin({ lat: Number(place.lat), lon: Number(place.lon) })
+    setOrigin(point)
+    setGpsMessage('')
     const selectedOriginName = place.display_name.split(',').slice(0, 2).join(', ')
     setOriginName(selectedOriginName)
     setOriginQuery(selectedOriginName)
@@ -450,7 +485,6 @@ function NavigationPage() {
     setDestinationReached(false)
     setRouteError('')
     if (destination) {
-      const point = { lat: Number(place.lat), lon: Number(place.lon) }
       const requestId = routeRequestRef.current
       setRouting(true)
       try {
@@ -467,6 +501,7 @@ function NavigationPage() {
   }
 
   const chooseDestination = async (place: SearchResult) => {
+    if (!hasValidOrigin) return
     searchRequestRef.current += 1
     setActiveSearch(null)
     const requestId = ++routeRequestRef.current
@@ -565,9 +600,8 @@ function NavigationPage() {
 
         const activeRoute = routeRef.current
         if (activeRoute?.steps.length) {
-          const earlyAnnouncementDistance = travelMode === 'foot' ? 150 : 800
-          const repeatAnnouncementDistance = travelMode === 'foot' ? 30 : 170
-          const turnAnnouncementDistance = travelMode === 'foot' ? 10 : 35
+          const announcementThresholds = navigationAnnouncementThresholds(travelMode)
+          const turnAnnouncementDistance = announcementThresholds.now
           let currentIndex = Math.min(stepIndexRef.current, activeRoute.steps.length - 1)
           let currentStep = activeRoute.steps[currentIndex]
           let [maneuverLon, maneuverLat] = currentStep.maneuver.location
@@ -583,10 +617,7 @@ function NavigationPage() {
           let maneuverDistance = getManeuverDistance(currentIndex, { lat: maneuverLat, lon: maneuverLon })
           const speechLines: string[] = []
           const announcementPhase = (step: RouteStep, distance: number) => {
-            if (distance <= turnAnnouncementDistance && step.maneuver.type !== 'arrive') return 'now' as const
-            if (distance <= repeatAnnouncementDistance) return 'repeat' as const
-            if (distance <= earlyAnnouncementDistance) return 'early' as const
-            return null
+            return navigationAnnouncementPhase(distance, travelMode, step.maneuver.type === 'arrive')
           }
           const addAnnouncement = (index: number, step: RouteStep, distance: number) => {
             const phase = announcementPhase(step, distance)
@@ -639,14 +670,25 @@ function NavigationPage() {
                   const nextStep = Math.min(1, newRoute.steps.length - 1)
                   stepIndexRef.current = nextStep
                   setStepIndex(nextStep)
-                  setNextTurnDistance(null)
                   announcedManeuversRef.current.clear()
                   const nextManeuver = newRoute.steps[nextStep]
-                  const distanceToNextManeuver = newRoute.steps[0]?.distance ?? nextManeuver.distance
+                  const departureStep = newRoute.steps[0]
+                  const distanceToNextManeuver = departureStep?.maneuver.type === 'depart'
+                    ? departureStep.distance
+                    : nextManeuver.distance
+                  setNextTurnDistance(distanceToNextManeuver)
+                  const phase = navigationAnnouncementPhase(
+                    distanceToNextManeuver,
+                    travelMode,
+                    nextManeuver.maneuver.type === 'arrive',
+                  ) ?? 'early'
                   if (voiceEnabledRef.current && nextStep > 0 && nextManeuver.maneuver.type !== 'depart') {
-                    announcedManeuversRef.current.set(nextStep, new Set<'early' | 'repeat' | 'now'>(['early']))
+                    const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
+                    if (phase === 'repeat' || phase === 'now') announcedPhases.add('repeat')
+                    if (phase === 'now') announcedPhases.add('now')
+                    announcedManeuversRef.current.set(nextStep, announcedPhases)
                   }
-                  queueNavigationSpeech(`Rê ji nû ve hate hesabkirin. ${kurmanciInstructionFor(nextManeuver, true, distanceToNextManeuver, 'early')}`)
+                  queueNavigationSpeech(`Rê ji nû ve hate hesabkirin. ${kurmanciInstructionFor(nextManeuver, true, distanceToNextManeuver, phase)}`)
                 }
               })
               .catch(() => {
@@ -673,6 +715,10 @@ function NavigationPage() {
   }, [destination, isNavigating, travelMode, voiceEnabled])
 
   const activeStep: RouteStep | undefined = route?.steps[Math.min(stepIndex, (route?.steps.length ?? 1) - 1)]
+  const activeInstructionDistance = nextTurnDistance ?? activeStep?.distance
+  const activeInstructionPhase = activeStep && activeInstructionDistance !== undefined
+    ? navigationAnnouncementPhase(activeInstructionDistance, travelMode, activeStep.maneuver.type === 'arrive') ?? 'early'
+    : 'early'
 
   useEffect(() => {
     if (!speechCue || !voiceEnabled || speechCue.id === processedSpeechEventRef.current) return
@@ -793,14 +839,12 @@ function NavigationPage() {
 
   const startNavigation = () => {
     if (!route || route.mode !== travelMode) return
-    navigationSessionRef.current += 1
-    void prepareAudio()
+    const navigationSessionId = ++navigationSessionRef.current
     lastLocationRenderRef.current = 0
     lastRerouteRef.current = Date.now()
     const nextStep = Math.min(1, route.steps.length - 1)
     stepIndexRef.current = nextStep
     setStepIndex(nextStep)
-    setNextTurnDistance(null)
     announcedManeuversRef.current.clear()
     const openingLines: string[] = []
     const departureStep = route.steps[0]
@@ -809,11 +853,34 @@ function NavigationPage() {
     }
     const nextManeuver = route.steps[nextStep]
     if (nextStep > 0 && nextManeuver) {
-      const distanceToManeuver = departureStep?.distance ?? nextManeuver.distance
-      openingLines.push(kurmanciInstructionFor(nextManeuver, true, distanceToManeuver, 'early'))
-      if (voiceEnabled) announcedManeuversRef.current.set(nextStep, new Set<'early' | 'repeat' | 'now'>(['early']))
+      const distanceToManeuver = departureStep?.maneuver.type === 'depart'
+        ? departureStep.distance
+        : nextManeuver.distance
+      const phase = navigationAnnouncementPhase(
+        distanceToManeuver,
+        travelMode,
+        nextManeuver.maneuver.type === 'arrive',
+      ) ?? 'early'
+      setNextTurnDistance(distanceToManeuver)
+      openingLines.push(kurmanciInstructionFor(nextManeuver, true, distanceToManeuver, phase))
+      if (voiceEnabled) {
+        const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
+        if (phase === 'repeat' || phase === 'now') announcedPhases.add('repeat')
+        if (phase === 'now') announcedPhases.add('now')
+        announcedManeuversRef.current.set(nextStep, announcedPhases)
+      }
+    } else {
+      setNextTurnDistance(null)
     }
-    queueNavigationSpeech(openingLines.join(' '))
+    const welcomeMessage = navigationWelcomeMessages[Math.floor(Math.random() * navigationWelcomeMessages.length)]
+    clearNavigationSpeech()
+    if (voiceEnabled) {
+      void prepareAudio().then((audioContext) => {
+        if (!audioContext || navigationSessionRef.current !== navigationSessionId || !voiceEnabledRef.current) return
+        queueNavigationSpeech(welcomeMessage)
+        queueNavigationSpeech(openingLines.join(' '))
+      })
+    }
     setDestinationReached(false)
     setRouteError('')
     setFollowLocation(true)
@@ -847,14 +914,9 @@ function NavigationPage() {
   const returnToDrivingPerspective = () => {
     setFollowLocation(true)
     setHeadingUpEnabled(true)
+    setHeading(null)
+    setDrivingPerspectiveRequest((request) => request + 1)
     requestLocation()
-  }
-
-  const openNavigationSearch = () => {
-    setQuery('')
-    setResults([])
-    setSearchError('')
-    setActiveSearch('destination')
   }
 
   const prepareNewRoute = () => {
@@ -964,6 +1026,7 @@ function NavigationPage() {
         headingUpEnabled={headingUpEnabled}
         heading={headingUpEnabled ? heading : null}
         centerRequest={mapCenterRequest}
+        drivingPerspectiveRequest={drivingPerspectiveRequest}
         zoomRequest={zoomRequest}
         onManualPan={() => {
           setFollowLocation(false)
@@ -1035,10 +1098,9 @@ function NavigationPage() {
             <span className="turn-card-arrow"><ManeuverArrow step={activeStep} /></span>
             <div className="turn-card-copy">
               <div className="turn-eyebrow"><span className="turn-indicator" /> NÄCHSTE ANWEISUNG</div>
-              <h1>{germanInstructionFor(activeStep, true, nextTurnDistance ?? undefined)}</h1>
-              <p>{activeStep.name || 'Hauptstraße'}</p>
+              <h1>{germanInstructionFor(activeStep, true, activeInstructionDistance, activeInstructionPhase)}</h1>
+              {activeStep.name && <p>{activeStep.name}</p>}
             </div>
-            <button className="navigation-search-button" type="button" onClick={openNavigationSearch} aria-label="Neues Ziel suchen" title="Neues Ziel suchen"><Search size={20} /></button>
           </div>
         ) : !activeSearch ? (
           <div className="panel-intro">
@@ -1133,7 +1195,7 @@ function NavigationPage() {
                   </button>
                 </form>
               </div>
-              <div className="destination-field">
+              <div className={`destination-field ${!hasValidOrigin ? 'destination-field--disabled' : ''}`}>
                 <label className="field-label" htmlFor="destination-search">NACH</label>
                 <form className="search-form" onSubmit={searchPlaces}>
                   <input
@@ -1142,11 +1204,15 @@ function NavigationPage() {
                     onChange={(event) => editDestinationInput(event.target.value)}
                     placeholder="Ziel suchen"
                     autoComplete="off"
+                    disabled={!hasValidOrigin}
                   />
-                  <button className="search-submit search-submit--small" type="submit" aria-label="Orte suchen" disabled={searching}>
+                  <button className="search-submit search-submit--small" type="submit" aria-label="Orte suchen" disabled={!hasValidOrigin || searching}>
                     {searching ? <LoaderCircle className="spin" size={14} /> : <Search size={14} />}
                   </button>
                 </form>
+                {!hasValidOrigin && gpsStatus !== 'error' && (
+                  <small className="destination-disabled-message" role="status">Startposition nicht verfügbar</small>
+                )}
               </div>
             </div>
           </div>

@@ -224,6 +224,9 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
 .stop-line { height: 44px; border-color: #bdc1c6; }
 .origin-field, .destination-field { min-height: 50px; grid-template-columns: 40px 1fr; padding: 0 10px; border: 1px solid #dadce0; border-radius: 8px; background: #fff; transition: border-color .18s ease, box-shadow .18s ease; }
 .origin-field:focus-within, .destination-field:focus-within { border-color: #1a73e8; box-shadow: 0 0 0 1px #1a73e8; }
+.destination-field.destination-field--disabled { background: #f8f9fa; }
+.destination-field--disabled .search-form input { cursor: not-allowed; }
+.destination-disabled-message { grid-column: 2; padding: 0 4px 8px; color: #9d3434; font-size: 11px; }
 .field-label { color: #5f6368; font-size: 9px; }
 .origin-button { min-height: 42px; padding: 0 7px; color: #3c4043; font-size: 13px; font-weight: 500; }
 .origin-button svg { color: #1a73e8; }
@@ -1010,32 +1013,6 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
   color: #a33434;
 }
 
-.navigation-search-button {
-  position: absolute;
-  top: 15px;
-  right: 15px;
-  display: grid;
-  width: 48px;
-  height: 48px;
-  place-items: center;
-  border: 1px solid #e2e8ef;
-  border-radius: 50%;
-  background: #f8fafc;
-  color: #4d5963;
-  cursor: pointer;
-  transition: transform .14s ease, background-color .14s ease, color .14s ease;
-}
-
-.navigation-search-button:active {
-  transform: scale(.92);
-  background: #e8f1ff;
-  color: #1769d2;
-}
-
-.navigation-panel--active .turn-card-copy {
-  padding-right: 42px;
-}
-
 .navigation-panel--active.navigation-panel--search-results > .search-results-view {
   position: fixed;
   z-index: 760;
@@ -1073,17 +1050,6 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
     flex-direction: row;
     align-items: center;
     gap: 8px;
-  }
-
-  .navigation-panel--active .turn-card-copy {
-    padding-right: 40px;
-  }
-
-  .navigation-search-button {
-    top: 13px;
-    right: 13px;
-    width: 48px;
-    height: 48px;
   }
 
   .navigation-stats {
