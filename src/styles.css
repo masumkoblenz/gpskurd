@@ -39,6 +39,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
 .map-brand-chip { position: absolute; z-index: 500; top: 22px; right: 24px; display: flex; align-items: center; gap: 9px; padding: 10px 15px 10px 10px; border: 1px solid #ffffffba; border-radius: 999px; background: #fbfcf8f2; box-shadow: 0 6px 26px #20332c12; color: #243d34; font-size: 13px; font-weight: 700; letter-spacing: -.02em; }
 .brand-mark, .wordmark-icon { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 50%; background: var(--green); color: white; }
 .map-location-control { position: absolute; z-index: 500; right: 21px; bottom: 68px; }
+.driving-perspective-reset { position: absolute; z-index: 510; bottom: 190px; left: 20px; }
 .map-control-button { display: grid; width: 42px; height: 42px; place-items: center; border: 0; border-radius: 12px; background: #fbfcf8; box-shadow: 0 5px 20px #20332c24; color: #2d6959; cursor: pointer; transition: transform .18s, background .18s; }
 .map-control-button:hover { transform: translateY(-2px); background: white; }
 
@@ -316,6 +317,13 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
   pointer-events: auto;
 }
 .navigation-panel--active > .navigation-drawer--expanded { max-height: min(76vh, 620px); }
+.speech-language-picker { display: flex; flex: 0 0 auto; flex-direction: column; gap: 7px; padding: 11px 14px; border-bottom: 1px solid #e8eaed; }
+.speech-language-label { color: #80868b; font-size: 9px; font-weight: 750; letter-spacing: .1em; }
+.speech-language-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+.speech-language-button { min-width: 0; min-height: 40px; padding: 0 9px; border: 1px solid #dadce0; border-radius: 10px; background: #fff; color: #5f6368; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; transition: background .15s ease, border-color .15s ease, color .15s ease; }
+.speech-language-button:hover { background: #f8f9fa; }
+.speech-language-button:focus-visible { outline: 2px solid #1a73e8; outline-offset: 2px; }
+.speech-language-button--active { border-color: #8ab4f8; background: #e8f0fe; color: #174ea6; }
 .navigation-drawer-toggle {
   position: relative;
   display: flex;
@@ -1238,6 +1246,11 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
     gap: 9px;
   }
 
+  .driving-perspective-reset {
+    bottom: calc(180px + env(safe-area-inset-bottom));
+    left: 16px;
+  }
+
   .map-control-button,
   .map-location-control--navigation .map-control-button {
     width: 48px;
@@ -1403,7 +1416,7 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
     bottom: calc(12px + env(safe-area-inset-bottom));
     left: 12px;
     width: auto;
-    max-height: min(34dvh, 300px);
+    max-height: min(46dvh, 360px);
     border: 1px solid #e3e8ec;
     border-radius: 24px;
     box-shadow: 0 8px 30px #162b3b24;

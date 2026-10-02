@@ -107,6 +107,16 @@ export function placeSubtitle(place: SearchResult) {
 
 export type NavigationAnnouncementPhase = 'early' | 'repeat' | 'now'
 
+export type NavigationGuidance = {
+  route: NavigationRoute
+  stepIndex: number
+  step: RouteStep
+  distanceMeters: number | null
+  phase: NavigationAnnouncementPhase | null
+  germanText: string
+  kurmanciText: string
+}
+
 export function navigationAnnouncementThresholds(mode: TravelMode) {
   return mode === 'foot'
     ? { early: 150, repeat: 30, now: 10 }
@@ -160,12 +170,10 @@ function kurmanciTurn(step: RouteStep) {
   return 'li pêş berdewam bike'
 }
 
-function kurmanciDistance(meters: number) {
-  const roundedDistance = meters < 100
-    ? Math.max(10, Math.round(meters / 10) * 10)
-    : Math.round(meters / 50) * 50
-  if (roundedDistance < 1_000) return `${roundedDistance} metreyan`
-  return `${(roundedDistance / 1_000).toFixed(1).replace('.', ',')} kilometroyan`
+function instructionDistance(meters: number) {
+  const roundedMeters = Math.max(0, Math.round(meters))
+  if (roundedMeters < 1_000) return { value: String(roundedMeters), meters: true }
+  return { value: (roundedMeters / 1_000).toFixed(1).replace('.', ','), meters: false }
 }
 
 export function kurmanciInstructionFor(
@@ -177,7 +185,7 @@ export function kurmanciInstructionFor(
   const maneuver = step.maneuver.type
   const turn = kurmanciTurn(step)
   if (maneuver === 'depart') return `${turn}.`
-  if (maneuver === 'arrive' && phase === 'now') return 'Heta cihê xwe berdewam bike.'
+  if (maneuver === 'arrive') return 'Heta cihê xwe berdewam bike.'
 
   const streetName = step.name.trim()
   const street = streetName ? ` li ser rêya ${streetName}` : ''
@@ -185,12 +193,11 @@ export function kurmanciInstructionFor(
   if (!includeDistance) return `${turn}${street}.`
 
   const distanceMeters = distanceOverride ?? step.distance
-  const distance = kurmanciDistance(distanceMeters)
+  const formattedDistance = instructionDistance(distanceMeters)
+  const distance = formattedDistance.meters
+    ? `${formattedDistance.value} metreyan`
+    : `${formattedDistance.value} kilometroyan`
   return `Di ${distance} de ${turn}${street}.`
-}
-
-export function kurmanciArrivalInstruction() {
-  return 'Gihîştî cihê xwe.'
 }
 
 function germanTurn(step: RouteStep) {
@@ -241,15 +248,68 @@ export function germanInstructionFor(
 ) {
   const turn = germanTurn(step)
   if (step.maneuver.type === 'depart' || step.maneuver.type === 'arrive') return turn
-  if (phase === 'now') return `Jetzt ${turn.charAt(0).toLocaleLowerCase('de-DE')}${turn.slice(1)}`
+  const action = turn.endsWith('.') ? turn.slice(0, -1) : turn
+  const streetName = step.name.trim()
+  const street = streetName ? ` auf ${streetName}` : ''
+  if (phase === 'now') return `Jetzt ${action.charAt(0).toLocaleLowerCase('de-DE')}${action.slice(1)}${street}.`
   const distanceMeters = distanceOverride ?? step.distance
-  if (!includeDistance || distanceMeters < 10) {
-    return `${turn.charAt(0).toLocaleUpperCase('de-DE')}${turn.slice(1)}`
+  if (!includeDistance) return `${action}${street}.`
+  const formattedDistance = instructionDistance(distanceMeters)
+  const distance = `${formattedDistance.value} ${formattedDistance.meters ? 'm' : 'km'}`
+  return `In ${distance} ${action}${street}.`
+}
+
+export function createNavigationGuidance(
+  route: NavigationRoute,
+  point: Point,
+  stepIndex: number,
+  accuracy = 10,
+): NavigationGuidance | null {
+  if (!route.steps.length) return null
+
+  const lastIndex = route.steps.length - 1
+  let activeIndex = Math.max(0, Math.min(stepIndex, lastIndex))
+  if (activeIndex === 0 && lastIndex > 0 && route.steps[0].maneuver.type === 'depart') activeIndex = 1
+
+  while (activeIndex < lastIndex) {
+    const approachStep = route.steps[activeIndex - 1]
+    const approachGeometry = approachStep?.geometry.coordinates ?? []
+    if (approachGeometry.length < 2) break
+
+    const distanceAlongApproach = distanceAlongRouteToEnd(point, approachGeometry)
+    const distanceFromApproach = distanceToRoute(point, approachGeometry)
+    const reachTolerance = Math.max(6, Math.min(accuracy, 15))
+    const routeTolerance = Math.max(12, Math.min(accuracy * 1.5, 30))
+    if (
+      !Number.isFinite(distanceAlongApproach) ||
+      distanceAlongApproach > reachTolerance ||
+      distanceFromApproach > routeTolerance
+    ) break
+    activeIndex += 1
   }
-  const distance = distanceMeters < 1_000
-    ? `${Math.max(50, Math.round(distanceMeters / 50) * 50)} m`
-    : `${(distanceMeters / 1_000).toFixed(1).replace('.', ',')} km`
-  return `In ${distance} ${turn}`
+
+  const step = route.steps[activeIndex]
+  const approachGeometry = route.steps[activeIndex - 1]?.geometry.coordinates ?? []
+  const distanceMeters = activeIndex === 0
+    ? distanceAlongRouteToEnd(point, route.geometry.coordinates)
+    : approachGeometry.length >= 2
+      ? distanceAlongRouteToEnd(point, approachGeometry)
+      : Number.NaN
+  const preciseDistance = Number.isFinite(distanceMeters) ? distanceMeters : null
+  const phase = preciseDistance === null
+    ? null
+    : navigationAnnouncementPhase(preciseDistance, route.mode, step.maneuver.type === 'arrive')
+  const textPhase = phase ?? 'early'
+
+  return {
+    route,
+    stepIndex: activeIndex,
+    step,
+    distanceMeters: preciseDistance,
+    phase,
+    germanText: germanInstructionFor(step, preciseDistance !== null, preciseDistance ?? undefined, textPhase),
+    kurmanciText: kurmanciInstructionFor(step, preciseDistance !== null, preciseDistance ?? undefined, textPhase),
+  }
 }
 
 export function distanceToRoute(point: Point, coordinates: [number, number][]) {
