@@ -90,7 +90,7 @@ export function NavigationMap({
         ? leaflet
             .polyline(
               route.geometry.coordinates.map(([lon, lat]) => leaflet.latLng(lat, lon)),
-              { color: '#267d6a', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' },
+              { color: '#1a73e8', weight: 6, opacity: 0.9, lineCap: 'round', lineJoin: 'round' },
             )
             .addTo(map)
         : null

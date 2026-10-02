@@ -308,6 +308,7 @@ function NavigationPage() {
         audioBuffer.copyToChannel(samples, 0)
         const source = audioContext.createBufferSource()
         source.buffer = audioBuffer
+        source.playbackRate.value = 1.12
         source.connect(audioContext.destination)
         source.onended = () => {
           if (audioSourceRef.current === source) audioSourceRef.current = null
@@ -394,7 +395,7 @@ function NavigationPage() {
   const upcomingSteps = route?.steps.slice(stepIndex, stepIndex + 5) ?? []
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${isNavigating ? 'app-shell--navigating' : ''}`}>
       <NavigationMap
         origin={origin}
         destination={destination}
