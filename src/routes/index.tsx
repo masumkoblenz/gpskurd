@@ -3,14 +3,16 @@ import {
   ArrowLeft,
   ArrowUpDown,
   ArrowUpRight,
-  ChevronDown,
-  ChevronUp,
+  CarFront,
   Clock3,
   Compass,
+  Footprints,
   LocateFixed,
   LoaderCircle,
   MapPin,
+  Minus,
   Navigation,
+  Plus,
   Play,
   RotateCcw,
   Search,
@@ -26,15 +28,18 @@ import {
   formatClockDuration,
   formatDistance,
   formatDuration,
+  germanInstructionFor,
   getRoute,
-  instructionFor,
+  kurmanciInstructionFor,
   placeSubtitle,
   placeTitle,
   type NavigationRoute,
   type Point,
   type RouteStep,
   type SearchResult,
+  type TravelMode,
 } from '@/lib/navigation'
+import type { ZoomRequest } from '@/components/NavigationMap'
 
 export const Route = createFileRoute('/')({
   component: NavigationPage,
@@ -46,7 +51,7 @@ function ManeuverArrow({ step }: { step: RouteStep }) {
   const isUturn = maneuver.type === 'uturn' || modifier === 'uturn'
   const isLeft = !isUturn && modifier.includes('left')
   const isRight = !isUturn && modifier.includes('right')
-  const directionLabel = isUturn ? 'Vegere' : isLeft ? 'Ber bi çepê bizivire' : isRight ? 'Ber bi rastê bizivire' : 'Rast biçe'
+  const directionLabel = isUturn ? 'Wenden' : isLeft ? 'Links abbiegen' : isRight ? 'Rechts abbiegen' : 'Geradeaus fahren'
 
   return (
     <svg className="maneuver-arrow" viewBox="0 0 32 32" fill="none" role="img" aria-label={directionLabel}>
@@ -82,6 +87,8 @@ function NavigationPage() {
   const [destination, setDestination] = useState<Point | null>(null)
   const [destinationName, setDestinationName] = useState('')
   const [route, setRoute] = useState<NavigationRoute | null>(null)
+  const [travelMode, setTravelMode] = useState<TravelMode>('driving')
+  const [routeError, setRouteError] = useState('')
   const [query, setQuery] = useState('')
   const [originQuery, setOriginQuery] = useState('')
   const [results, setResults] = useState<SearchResult[]>([])
@@ -89,13 +96,20 @@ function NavigationPage() {
   const [activeSearch, setActiveSearch] = useState<'destination' | 'origin' | null>(null)
   const [searching, setSearching] = useState(false)
   const [searchingOrigin, setSearchingOrigin] = useState(false)
+  const [searchError, setSearchError] = useState('')
   const [routing, setRouting] = useState(false)
   const [isNavigating, setIsNavigating] = useState(false)
-  const [directionsExpanded, setDirectionsExpanded] = useState(false)
+  const [followLocation, setFollowLocation] = useState(true)
+  const [heading, setHeading] = useState<number | null>(null)
+  const [headingUpEnabled, setHeadingUpEnabled] = useState(false)
+  const [zoomRequest, setZoomRequest] = useState<ZoomRequest>({ id: 0, direction: 1 })
+  const [nextTurnDistance, setNextTurnDistance] = useState<number | null>(null)
+  const [destinationReached, setDestinationReached] = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
   const [mapCenterRequest, setMapCenterRequest] = useState(0)
   const [stepIndex, setStepIndex] = useState(0)
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  const [gpsMessage, setGpsMessage] = useState('')
   const activeSearchResults = activeSearch === 'origin' ? originResults : results
   const activeSearchLoading = activeSearch === 'origin' ? searchingOrigin : searching
   const routeRef = useRef(route)
@@ -104,11 +118,16 @@ function NavigationPage() {
   const lastRerouteRef = useRef(0)
   const reroutingRef = useRef(false)
   const stepIndexRef = useRef(stepIndex)
-  const drawerTouchStartYRef = useRef<number | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
   const audioSourceRef = useRef<AudioBufferSourceNode | null>(null)
   const ttsWorkerRef = useRef<Worker | null>(null)
   const speechRequestRef = useRef(0)
+  const currentLocationRef = useRef<Point | null>(null)
+  const lastLocationFixAtRef = useRef(0)
+  const lastLocationRenderRef = useRef(0)
+  const headingUpRef = useRef(headingUpEnabled)
+  const stopNavigationRef = useRef<() => void>(() => undefined)
+  headingUpRef.current = headingUpEnabled
   routeRef.current = route
   stepIndexRef.current = stepIndex
 
@@ -124,38 +143,137 @@ function NavigationPage() {
     }
   }
 
+  const routeFailureMessage = (error: unknown) =>
+    error instanceof Error && (error.message.startsWith('Route ') || error.message.startsWith('Zwischen '))
+      ? error.message
+      : 'Die Route konnte nicht berechnet werden. Bitte erneut versuchen.'
+
+  const updateCurrentLocation = (coords: GeolocationCoordinates, forceRender = false) => {
+    if (!Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude)) return null
+    const accuracy = coords.accuracy
+    const previous = currentLocationRef.current
+    const now = Date.now()
+    if (accuracy > 100 && previous) {
+      setGpsStatus('error')
+      setGpsMessage('Der GPS-Standort ist ungenau. Begeben Sie sich an einen Ort mit freier Sicht.')
+      return null
+    }
+
+    const incoming = { lat: coords.latitude, lon: coords.longitude }
+    let point = incoming
+    if (previous) {
+      const movement = distanceBetween(previous, incoming)
+      const elapsedSeconds = Math.max(0, now - lastLocationFixAtRef.current) / 1_000
+      const plausibleMovement = Math.max(80, Math.max(8, Math.min(coords.speed ?? 20, 45)) * elapsedSeconds * 2 + accuracy * 1.5)
+      if (accuracy > 35 && movement > plausibleMovement) {
+        setGpsMessage('Das GPS-Signal ist schwach. Der Standort kann ungenau sein.')
+        return null
+      }
+      if (accuracy > 15 && movement < accuracy * 2) {
+        const smoothing = elapsedSeconds > 5
+          ? Math.max(0.55, Math.min(0.8, 18 / accuracy))
+          : Math.max(0.2, Math.min(0.75, 18 / accuracy))
+        point = {
+          lat: previous.lat + (incoming.lat - previous.lat) * smoothing,
+          lon: previous.lon + (incoming.lon - previous.lon) * smoothing,
+        }
+      }
+    }
+
+    currentLocationRef.current = point
+    lastLocationFixAtRef.current = now
+    setGpsStatus('ready')
+    setGpsMessage(accuracy > 35 ? 'Das GPS-Signal ist schwach. Der Standort kann ungenau sein.' : '')
+    if (forceRender || !previous || now - lastLocationRenderRef.current >= 1_800) {
+      lastLocationRenderRef.current = now
+      setCurrentLocation(point)
+    }
+
+    const course = coords.heading
+    const minimumCourseSpeed = travelMode === 'foot' ? 0.35 : 1.2
+    const maximumCourseAccuracy = travelMode === 'foot' ? 25 : 35
+    const hasReliableCourse = accuracy <= maximumCourseAccuracy && coords.speed !== null && coords.speed > minimumCourseSpeed && course !== null && Number.isFinite(course)
+    if (hasReliableCourse && headingUpRef.current) {
+      setHeading((oldHeading) => {
+        if (oldHeading === null) return course
+        const difference = Math.abs(((course - oldHeading + 540) % 360) - 180)
+        return difference > 12 ? course : oldHeading
+      })
+    } else if (headingUpRef.current) {
+      setHeading(null)
+    }
+
+    return point
+  }
+
   const requestLocation = () => {
     if (!navigator.geolocation) {
       setGpsStatus('error')
+      setGpsMessage('GPS wird von diesem Gerät nicht unterstützt.')
+      setFollowLocation(false)
       return
     }
     setGpsStatus('loading')
+    setGpsMessage('')
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const point = { lat: coords.latitude, lon: coords.longitude }
-        setCurrentLocation(point)
-        if (isNavigating) setMapCenterRequest((request) => request + 1)
-        if (!isNavigating) {
-          searchRequestRef.current += 1
-          setActiveSearch(null)
-          setResults([])
-          setSearching(false)
-          setSearchingOrigin(false)
-          routeRequestRef.current += 1
-          setOrigin(point)
-          setOriginName('Cihê min')
-          setOriginQuery('')
-          setOriginResults([])
-          setRoute(null)
-          setRouting(false)
-          setStepIndex(0)
-        }
-        setGpsStatus('ready')
+        const point = updateCurrentLocation(coords, true)
+        if (!point) return
+        setFollowLocation(true)
+        if (isNavigating) setHeadingUpEnabled(true)
+        setMapCenterRequest((request) => request + 1)
       },
       () => {
         setGpsStatus('error')
+        setGpsMessage('Standort konnte nicht ermittelt werden. Bitte GPS-Berechtigung prüfen.')
+        setFollowLocation(false)
       },
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 10_000 },
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
+    )
+  }
+
+  const requestOriginLocation = () => {
+    if (!navigator.geolocation) {
+      setGpsStatus('error')
+      setGpsMessage('GPS wird von diesem Gerät nicht unterstützt.')
+      setFollowLocation(false)
+      return
+    }
+    setGpsStatus('loading')
+    setGpsMessage('')
+    navigator.geolocation.getCurrentPosition(
+      ({ coords }) => {
+        const point = updateCurrentLocation(coords, true)
+        if (!point) return
+        const requestId = ++routeRequestRef.current
+        setOrigin(point)
+        setOriginName('Mein Standort')
+        setFollowLocation(true)
+        setMapCenterRequest((request) => request + 1)
+        setRoute(null)
+        setStepIndex(0)
+        if (!destination) return
+        setRouting(true)
+        setRouteError('')
+        void getRoute(point, destination, travelMode)
+          .then((nextRoute) => {
+            if (routeRequestRef.current === requestId) setRoute(nextRoute)
+          })
+          .catch((error: unknown) => {
+            if (routeRequestRef.current === requestId) {
+              setRouteError(routeFailureMessage(error))
+            }
+          })
+          .finally(() => {
+            if (routeRequestRef.current === requestId) setRouting(false)
+          })
+      },
+      () => {
+        setGpsStatus('error')
+        setGpsMessage('Standort konnte nicht ermittelt werden. Bitte GPS-Berechtigung prüfen.')
+        setFollowLocation(false)
+      },
+      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
     )
   }
 
@@ -166,6 +284,7 @@ function NavigationPage() {
     if (term.length < 2) return
     const requestId = ++searchRequestRef.current
     setActiveSearch('destination')
+    setSearchError('')
     setOriginResults([])
     setSearching(true)
     setResults([])
@@ -173,7 +292,7 @@ function NavigationPage() {
       const places = await findPlaces(term)
       if (searchRequestRef.current === requestId) setResults(places)
     } catch {
-      return
+      if (searchRequestRef.current === requestId) setSearchError('Die Suche ist fehlgeschlagen. Bitte erneut versuchen.')
     } finally {
       if (searchRequestRef.current === requestId) setSearching(false)
     }
@@ -186,6 +305,7 @@ function NavigationPage() {
     if (term.length < 2) return
     const requestId = ++searchRequestRef.current
     setActiveSearch('origin')
+    setSearchError('')
     setResults([])
     setSearchingOrigin(true)
     setOriginResults([])
@@ -193,7 +313,7 @@ function NavigationPage() {
       const places = await findPlaces(term)
       if (searchRequestRef.current === requestId) setOriginResults(places)
     } catch {
-      return
+      if (searchRequestRef.current === requestId) setSearchError('Die Suche ist fehlgeschlagen. Bitte erneut versuchen.')
     } finally {
       if (searchRequestRef.current === requestId) setSearchingOrigin(false)
     }
@@ -206,9 +326,10 @@ function NavigationPage() {
     setOriginResults([])
     setSearching(false)
     setSearchingOrigin(false)
+    setSearchError('')
   }
 
-  const chooseOrigin = (place: SearchResult) => {
+  const chooseOrigin = async (place: SearchResult) => {
     searchRequestRef.current += 1
     setActiveSearch(null)
     routeRequestRef.current += 1
@@ -220,6 +341,22 @@ function NavigationPage() {
     setRouting(false)
     setIsNavigating(false)
     setStepIndex(0)
+    setRouteError('')
+    if (destination) {
+      const point = { lat: Number(place.lat), lon: Number(place.lon) }
+      const requestId = routeRequestRef.current
+      setRouting(true)
+      try {
+        const nextRoute = await getRoute(point, destination, travelMode)
+        if (routeRequestRef.current === requestId) setRoute(nextRoute)
+      } catch (error) {
+        if (routeRequestRef.current === requestId) {
+          setRouteError(routeFailureMessage(error))
+        }
+      } finally {
+        if (routeRequestRef.current === requestId) setRouting(false)
+      }
+    }
   }
 
   const chooseDestination = async (place: SearchResult) => {
@@ -227,22 +364,53 @@ function NavigationPage() {
     setActiveSearch(null)
     const requestId = ++routeRequestRef.current
     const point = { lat: Number(place.lat), lon: Number(place.lon) }
+    const startPoint = isNavigating ? currentLocationRef.current ?? origin : origin
+    if (isNavigating && startPoint) {
+      setOrigin(startPoint)
+      setOriginName('Mein Standort')
+    }
     setDestination(point)
     setDestinationName(place.display_name.split(',').slice(0, 2).join(', '))
     setQuery('')
     setResults([])
     setOriginResults([])
     setRoute(null)
+    setRouteError('')
+    setDestinationReached(false)
     setIsNavigating(false)
     setStepIndex(0)
-    if (!origin) return
+    if (!startPoint) return
 
     setRouting(true)
     try {
-      const nextRoute = await getRoute(origin, point)
+      const nextRoute = await getRoute(startPoint, point, travelMode)
       if (routeRequestRef.current === requestId) setRoute(nextRoute)
-    } catch {
+    } catch (error) {
+      if (routeRequestRef.current === requestId) {
+        setRouteError(routeFailureMessage(error))
+      }
+    } finally {
+      if (routeRequestRef.current === requestId) setRouting(false)
+    }
+  }
+
+  const selectTravelMode = async (mode: TravelMode) => {
+    if (mode === travelMode) return
+    const requestId = ++routeRequestRef.current
+    setTravelMode(mode)
+    setRoute(null)
+    setRouteError('')
+    setStepIndex(0)
+    if (!origin || !destination) {
+      setRouting(false)
       return
+    }
+    setRouting(true)
+    try {
+      const nextRoute = await getRoute(origin, destination, mode)
+      if (routeRequestRef.current === requestId) setRoute(nextRoute)
+    } catch (error) {
+      if (routeRequestRef.current === requestId) setRouteError(routeFailureMessage(error))
     } finally {
       if (routeRequestRef.current === requestId) setRouting(false)
     }
@@ -252,15 +420,17 @@ function NavigationPage() {
     if (!origin || !destination) return
     const requestId = ++routeRequestRef.current
     setRouting(true)
-    setIsNavigating(false)
+    setRouteError('')
     try {
-      const nextRoute = await getRoute(origin, destination)
+      const nextRoute = await getRoute(origin, destination, travelMode)
       if (routeRequestRef.current === requestId) {
         setRoute(nextRoute)
         setStepIndex(0)
       }
-    } catch {
-      return
+    } catch (error) {
+      if (routeRequestRef.current === requestId) {
+        setRouteError(routeFailureMessage(error))
+      }
     } finally {
       if (routeRequestRef.current === requestId) setRouting(false)
     }
@@ -269,53 +439,90 @@ function NavigationPage() {
   useEffect(() => {
     if (!isNavigating) return
     if (!navigator.geolocation) {
-      setIsNavigating(false)
+      setGpsStatus('error')
+      setGpsMessage('GPS wird von diesem Gerät nicht unterstützt. Die Route bleibt auf der Karte sichtbar.')
+      setFollowLocation(false)
       return
     }
 
     const watchId = navigator.geolocation.watchPosition(
       ({ coords }) => {
-        const point = { lat: coords.latitude, lon: coords.longitude }
-        setCurrentLocation(point)
-        setGpsStatus('ready')
+        const point = updateCurrentLocation(coords)
+        if (!point) return
+
+        if (destination && distanceBetween(point, destination) <= Math.max(30, Math.min(coords.accuracy, 50))) {
+          setDestinationReached(true)
+          stopNavigationRef.current()
+          return
+        }
 
         const activeRoute = routeRef.current
         if (activeRoute?.steps.length) {
-          const currentStep = activeRoute.steps[Math.min(stepIndexRef.current, activeRoute.steps.length - 1)]
-          const [maneuverLon, maneuverLat] = currentStep.maneuver.location
-          if (distanceBetween(point, { lat: maneuverLat, lon: maneuverLon }) < 34) {
-            setStepIndex((index) => Math.min(index + 1, activeRoute.steps.length - 1))
+          let currentIndex = Math.min(stepIndexRef.current, activeRoute.steps.length - 1)
+          let currentStep = activeRoute.steps[currentIndex]
+          let [maneuverLon, maneuverLat] = currentStep.maneuver.location
+          while (
+            currentIndex < activeRoute.steps.length - 1 &&
+            distanceBetween(point, { lat: maneuverLat, lon: maneuverLon }) < 34
+          ) {
+            currentIndex += 1
+            currentStep = activeRoute.steps[currentIndex]
+            ;[maneuverLon, maneuverLat] = currentStep.maneuver.location
           }
+          if (currentIndex !== stepIndexRef.current) {
+            stepIndexRef.current = currentIndex
+            setStepIndex(currentIndex)
+            setNextTurnDistance(null)
+          }
+
+          const maneuverDistance = distanceBetween(point, { lat: maneuverLat, lon: maneuverLon })
+          const distanceBucket = maneuverDistance >= 1_000
+            ? Math.round(maneuverDistance / 100) * 100
+            : Math.round(maneuverDistance / 50) * 50
+          setNextTurnDistance((previousDistance) => previousDistance === distanceBucket ? previousDistance : distanceBucket)
+
           const offRouteDistance = distanceToRoute(point, activeRoute.geometry.coordinates)
           const now = Date.now()
           if (
             destination &&
-            offRouteDistance > 65 &&
+            offRouteDistance > Math.max(65, coords.accuracy * 1.5) &&
             now - lastRerouteRef.current > 12_000 &&
             !reroutingRef.current
           ) {
             lastRerouteRef.current = now
             reroutingRef.current = true
             const requestId = ++routeRequestRef.current
-            void getRoute(point, destination)
+            setRouting(true)
+            setRouteError('')
+            void getRoute(point, destination, travelMode)
               .then((newRoute) => {
                 if (routeRequestRef.current === requestId) {
                   setRoute(newRoute)
-                  setStepIndex(0)
+                  const nextStep = Math.min(1, newRoute.steps.length - 1)
+                  stepIndexRef.current = nextStep
+                  setStepIndex(nextStep)
+                  setNextTurnDistance(null)
                 }
               })
-              .catch(() => undefined)
+              .catch(() => {
+                if (routeRequestRef.current === requestId) setRouteError('Neue Route konnte nicht berechnet werden. Die Navigation wird auf der bisherigen Route fortgesetzt.')
+              })
               .finally(() => {
                 reroutingRef.current = false
+                if (routeRequestRef.current === requestId) setRouting(false)
               })
           }
         }
       },
-      () => {},
-      { enableHighAccuracy: true, maximumAge: 2_000, timeout: 15_000 },
+      () => {
+        setGpsStatus('error')
+        setGpsMessage('Standort kann nicht aktualisiert werden. Bitte GPS-Berechtigung prüfen.')
+        setFollowLocation(false)
+      },
+      { enableHighAccuracy: true, maximumAge: 1_000, timeout: 15_000 },
     )
     return () => navigator.geolocation.clearWatch(watchId)
-  }, [destination, isNavigating])
+  }, [destination, isNavigating, travelMode])
 
   const activeStep: RouteStep | undefined = route?.steps[Math.min(stepIndex, (route?.steps.length ?? 1) - 1)]
   useEffect(() => {
@@ -379,7 +586,7 @@ function NavigationPage() {
     worker.addEventListener('error', handleWorkerError)
     worker.postMessage({
       requestId,
-      text: instructionFor(activeStep),
+      text: kurmanciInstructionFor(activeStep),
       type: 'speak',
     })
 
@@ -398,22 +605,59 @@ function NavigationPage() {
   }, [])
 
   const startNavigation = () => {
-    if (!route) return
+    if (!route || route.mode !== travelMode) return
     void prepareAudio()
+    lastLocationRenderRef.current = 0
     lastRerouteRef.current = Date.now()
-    setStepIndex(Math.min(1, route.steps.length - 1))
-    setDirectionsExpanded(false)
+    const nextStep = Math.min(1, route.steps.length - 1)
+    stepIndexRef.current = nextStep
+    setStepIndex(nextStep)
+    setNextTurnDistance(null)
+    setDestinationReached(false)
+    setRouteError('')
+    setFollowLocation(true)
+    setHeadingUpEnabled(true)
     setIsNavigating(true)
   }
 
   const stopNavigation = () => {
     setIsNavigating(false)
-    setDirectionsExpanded(false)
+    setFollowLocation(false)
+    setHeading(null)
+    setRouting(false)
+    routeRequestRef.current += 1
+    reroutingRef.current = false
     if (audioSourceRef.current) {
       audioSourceRef.current.stop()
       audioSourceRef.current.disconnect()
       audioSourceRef.current = null
     }
+  }
+  stopNavigationRef.current = stopNavigation
+
+  const toggleRotation = () => {
+    const nextMode = !headingUpEnabled
+    setHeadingUpEnabled(nextMode)
+    setHeading(null)
+  }
+
+  const requestZoom = (direction: -1 | 1) => {
+    setZoomRequest((request) => ({ id: request.id + 1, direction }))
+  }
+
+  const openNavigationSearch = () => {
+    setQuery('')
+    setResults([])
+    setSearchError('')
+    setActiveSearch('destination')
+  }
+
+  const prepareNewRoute = () => {
+    if (currentLocationRef.current) {
+      setOrigin(currentLocationRef.current)
+      setOriginName('Mein Standort')
+    }
+    clearDestination()
   }
 
   const toggleVoice = () => {
@@ -426,8 +670,11 @@ function NavigationPage() {
     setDestination(null)
     setDestinationName('')
     setRoute(null)
+    setRouteError('')
     setRouting(false)
     setIsNavigating(false)
+    setDestinationReached(false)
+    setNextTurnDistance(null)
     setResults([])
     setOriginResults([])
   }
@@ -439,32 +686,56 @@ function NavigationPage() {
     setOriginQuery('')
     setOriginResults([])
     setRoute(null)
+    setRouteError('')
     setRouting(false)
     setIsNavigating(false)
     setStepIndex(0)
   }
 
-  const swapStops = () => {
+  const swapStops = async () => {
     if (!origin || !destination) return
     routeRequestRef.current += 1
+    const requestId = routeRequestRef.current
     setOrigin(destination)
     setDestination(origin)
     setOriginName(destinationName)
-    setDestinationName(originName || 'Cihê min')
+    setDestinationName(originName || 'Mein Standort')
     setOriginQuery('')
     setOriginResults([])
     setRoute(null)
+    setRouteError('')
     setRouting(false)
     setIsNavigating(false)
     setStepIndex(0)
     setQuery('')
     setResults([])
+    setRouting(true)
+    try {
+      const nextRoute = await getRoute(destination, origin, travelMode)
+      if (routeRequestRef.current === requestId) setRoute(nextRoute)
+    } catch (error) {
+      if (routeRequestRef.current === requestId) {
+        setRouteError(routeFailureMessage(error))
+      }
+    } finally {
+      if (routeRequestRef.current === requestId) setRouting(false)
+    }
   }
 
   const remainingDistance = route?.steps.slice(stepIndex).reduce((total, step) => total + step.distance, 0) ?? 0
   const remainingDuration = route?.steps.slice(stepIndex).reduce((total, step) => total + step.duration, 0) ?? 0
-  const upcomingSteps = route?.steps.slice(stepIndex, stepIndex + 5) ?? []
-
+  const activeNavigationStep = route?.steps[stepIndex]
+  const distanceAfterTurn = route?.steps.slice(stepIndex + 1).reduce((total, step) => total + step.distance, 0) ?? 0
+  const durationAfterTurn = route?.steps.slice(stepIndex + 1).reduce((total, step) => total + step.duration, 0) ?? 0
+  const liveRemainingDistance = isNavigating && nextTurnDistance !== null
+    ? nextTurnDistance + distanceAfterTurn
+    : remainingDistance
+  const liveRemainingDuration = isNavigating && nextTurnDistance !== null && activeNavigationStep?.distance
+    ? Math.min(1, nextTurnDistance / activeNavigationStep.distance) * activeNavigationStep.duration + durationAfterTurn
+    : remainingDuration
+  const arrivalTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(
+    new Date(Date.now() + liveRemainingDuration * 1_000),
+  )
   return (
     <main className={`app-shell ${isNavigating ? 'app-shell--navigating' : ''}`}>
       <NavigationMap
@@ -473,7 +744,12 @@ function NavigationPage() {
         currentLocation={currentLocation}
         route={route}
         isNavigating={isNavigating}
+        followLocation={followLocation}
+        headingUpEnabled={headingUpEnabled}
+        heading={headingUpEnabled ? heading : null}
         centerRequest={mapCenterRequest}
+        zoomRequest={zoomRequest}
+        onManualPan={() => setFollowLocation(false)}
       />
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
@@ -485,72 +761,100 @@ function NavigationPage() {
             className="map-control-button"
             type="button"
             onClick={toggleVoice}
-            aria-label={voiceEnabled ? 'Deng rawestîne' : 'Deng çalak bike'}
+            aria-label={voiceEnabled ? 'Sprachausgabe pausieren' : 'Sprachausgabe aktivieren'}
             aria-pressed={voiceEnabled}
-            title={voiceEnabled ? 'Deng çalak e' : 'Deng rawestiyaye'}
+            title={voiceEnabled ? 'Sprachausgabe aktiviert' : 'Sprachausgabe pausiert'}
           >
             <span className={`audio-control-icon ${voiceEnabled ? '' : 'audio-control-icon--muted'}`}>
               <Volume2 size={19} />
             </span>
           </button>
         )}
-        {isNavigating && (
-          <button
-            className="map-control-button"
-            type="button"
-            onClick={() => setMapCenterRequest((request) => request + 1)}
-            aria-label="Nexşeyê navend bike û li bakur rast bike"
-            title="Nexşeyê navend bike û li bakur rast bike"
-          >
-            <Compass size={19} />
-          </button>
-        )}
-        <button className="map-control-button" type="button" onClick={requestLocation} aria-label="Cihê min bibîne">
+        <button className="map-control-button map-zoom-button" type="button" onClick={() => requestZoom(1)} aria-label="Vergrößern" title="Vergrößern">
+          <Plus size={20} />
+        </button>
+        <button className="map-control-button map-zoom-button" type="button" onClick={() => requestZoom(-1)} aria-label="Verkleinern" title="Verkleinern">
+          <Minus size={20} />
+        </button>
+        <button
+          className={`map-control-button ${headingUpEnabled ? 'map-control-button--active' : ''}`}
+          type="button"
+          onClick={toggleRotation}
+          aria-label={headingUpEnabled ? 'Karte nach Norden ausrichten' : travelMode === 'foot' ? 'Karte in Laufrichtung drehen' : 'Karte in Fahrtrichtung drehen'}
+          aria-pressed={headingUpEnabled}
+          title={headingUpEnabled ? 'Norden oben' : travelMode === 'foot' ? 'In Laufrichtung drehen' : 'In Fahrtrichtung drehen'}
+        >
+          <Compass size={19} />
+        </button>
+        <button className={`map-control-button ${followLocation ? 'map-control-button--active' : 'map-control-button--inactive'}`} type="button" onClick={requestLocation} aria-label={followLocation ? 'Standort zentrieren' : 'Standort zentrieren und verfolgen'} aria-pressed={followLocation}>
           {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={19} /> : <LocateFixed size={19} />}
         </button>
       </div>
+
+      {gpsMessage && <div className="map-status-banner" role="status">{gpsMessage}</div>}
+      {routeError && <div className="map-status-banner map-status-banner--error" role="alert">{routeError}</div>}
+      {destinationReached && (
+        <div className="destination-reached-banner" role="status">
+          <strong>Ziel erreicht.</strong>
+          <button type="button" onClick={prepareNewRoute}>Neue Route starten</button>
+        </div>
+      )}
 
       <section className={`navigation-panel ${isNavigating ? 'navigation-panel--active' : ''} ${activeSearch ? 'navigation-panel--search-results' : ''}`}>
         <header className="panel-header">
           <div className="wordmark">
             <span className="wordmark-icon"><Navigation size={17} strokeWidth={2.4} /></span>
             <span>Rêber</span>
-            <span className="wordmark-caption">RÊBERIYA TE</span>
+            <span className="wordmark-caption">IHRE NAVIGATION</span>
           </div>
-          <div className="header-state"><span className="state-dot" /> ZINDÎ</div>
+          <div className="header-state"><span className="state-dot" /> LIVE</div>
         </header>
 
-        {isNavigating && activeStep ? (
+        {isNavigating && activeStep && !activeSearch ? (
           <div className="turn-card">
             <span className="turn-card-arrow"><ManeuverArrow step={activeStep} /></span>
             <div className="turn-card-copy">
-              <div className="turn-eyebrow"><span className="turn-indicator" /> RÊBERIYA NIHA</div>
-              <h1>{instructionFor(activeStep)}</h1>
-              <p>{activeStep.name || 'Rêya sereke'}</p>
+              <div className="turn-eyebrow"><span className="turn-indicator" /> NÄCHSTE ANWEISUNG</div>
+              <h1>{germanInstructionFor(activeStep, true, nextTurnDistance ?? undefined)}</h1>
+              <p>{activeStep.name || 'Hauptstraße'}</p>
             </div>
+            <button className="navigation-search-button" type="button" onClick={openNavigationSearch} aria-label="Neues Ziel suchen" title="Neues Ziel suchen"><Search size={20} /></button>
           </div>
         ) : !activeSearch ? (
           <div className="panel-intro">
-            <div className="eyebrow"><Compass size={14} /> LI SER RÊ</div>
-            <h1>Bi aramî bigere.</h1>
-            <p>Armanca xwe bibêje. Rêber rêya te dibîne.</p>
+            <div className="eyebrow"><Compass size={14} /> NAVIGATION</div>
+            <h1>Wohin soll es gehen?</h1>
+            <p>Ziel eingeben, Route auswählen und losfahren.</p>
           </div>
         ) : null}
 
         {activeSearch ? (
-          <section className="search-results-view" aria-label="Cihên hatine dîtin" aria-live="polite">
+          <section className="search-results-view" aria-label="Suchergebnisse" aria-live="polite">
             <header className="search-results-view-header">
-              <button className="search-results-back" type="button" onClick={closeSearchResults} aria-label="Vegere lêgerînê">
+              <button className="search-results-back" type="button" onClick={closeSearchResults} aria-label="Zurück zur Suche">
                 <ArrowLeft size={18} />
               </button>
               <div className="search-results-heading">
-                <strong>{activeSearch === 'origin' ? 'CIHÊN DESTPÊKÊ' : 'CIHÊN ARMANCÊ'}</strong>
-                <small>{activeSearchLoading ? 'Li cihan digere…' : `${activeSearchResults.length} cih hat dîtin`}</small>
+                <strong>{activeSearch === 'origin' ? 'STARTORTE' : 'ZIELE'}</strong>
+                <small>{activeSearchLoading ? 'Orte werden gesucht…' : searchError || `${activeSearchResults.length} ${activeSearchResults.length === 1 ? 'Ort gefunden' : 'Orte gefunden'}`}</small>
               </div>
             </header>
+            <form className="search-results-form" onSubmit={activeSearch === 'origin' ? searchOriginPlaces : searchPlaces}>
+              <input
+                id="search-results-query"
+                value={activeSearch === 'origin' ? originQuery : query}
+                onChange={(event) => activeSearch === 'origin' ? setOriginQuery(event.target.value) : setQuery(event.target.value)}
+                placeholder={activeSearch === 'origin' ? 'Startort suchen' : 'Ziel suchen'}
+                autoComplete="off"
+                autoFocus
+              />
+              <button className="search-submit" type="submit" aria-label="Orte suchen" disabled={activeSearchLoading}>
+                {activeSearchLoading ? <LoaderCircle className="spin" size={18} /> : <Search size={18} />}
+              </button>
+            </form>
             <div className="search-results-list" role="list">
               {activeSearchLoading ? (
-                <div className="search-results-status"><LoaderCircle className="spin" size={19} /><span>Li cihan digere…</span></div>
+                <div className="search-results-status"><LoaderCircle className="spin" size={19} /><span>Orte werden gesucht…</span></div>
               ) : activeSearchResults.length > 0 ? (
                 activeSearchResults.map((place) => (
                   <div className="search-result-item" key={place.place_id} role="listitem">
@@ -565,8 +869,10 @@ function NavigationPage() {
                     </button>
                   </div>
                 ))
+              ) : searchError ? (
+                <div className="search-results-status search-results-status--error" role="alert"><Search size={18} /><span>{searchError}</span></div>
               ) : (
-                <div className="search-results-status"><Search size={18} /><span>Tu cih nehat dîtin.</span></div>
+                <div className="search-results-status"><Search size={18} /><span>Keine Orte gefunden.</span></div>
               )}
             </div>
           </section>
@@ -577,7 +883,7 @@ function NavigationPage() {
               {destination && <span className="stop-dot stop-dot--start" />}
               {destination && <span className="stop-line" />}
               {origin && destination && (
-                <button className="swap-stops-button" type="button" onClick={swapStops} aria-label="Destpêk û armancê biguherîne" title="Destpêk û armancê biguherîne">
+                <button className="swap-stops-button" type="button" onClick={swapStops} aria-label="Start und Ziel tauschen" title="Start und Ziel tauschen">
                   <ArrowUpDown size={16} />
                 </button>
               )}
@@ -587,14 +893,14 @@ function NavigationPage() {
               {destination && (
                 <div className="origin-field">
                   {origin ? (
-                    <span className="field-label">JI</span>
+                    <span className="field-label">VON</span>
                   ) : (
-                    <label className="field-label" htmlFor="origin-search">JI</label>
+                    <label className="field-label" htmlFor="origin-search">VON</label>
                   )}
                   {origin ? (
                     <div className="selected-destination selected-origin">
-                      <span>{originName || 'Cihê min'}</span>
-                      <button type="button" onClick={clearOrigin} aria-label="Cihê destpêkê biguherîne"><X size={16} /></button>
+                      <span>{originName || 'Mein Standort'}</span>
+                      <button type="button" onClick={clearOrigin} aria-label="Startpunkt entfernen"><X size={16} /></button>
                     </div>
                   ) : (
                     <form className="search-form origin-search-form" onSubmit={searchOriginPlaces}>
@@ -602,13 +908,13 @@ function NavigationPage() {
                         id="origin-search"
                         value={originQuery}
                         onChange={(event) => setOriginQuery(event.target.value)}
-                        placeholder="Cihê destpêkê bigere"
+                        placeholder="Startort suchen"
                         autoComplete="off"
                       />
-                      <button className="search-submit" type="submit" aria-label="Cihê destpêkê bigere" disabled={searchingOrigin}>
+                      <button className="search-submit" type="submit" aria-label="Startort suchen" disabled={searchingOrigin}>
                         {searchingOrigin ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}
                       </button>
-                      <button className="origin-location-button" type="button" onClick={requestLocation} aria-label="Cihê min wek destpêkê bikar bîne" title="Cihê min wek destpêkê bikar bîne">
+                      <button className="origin-location-button" type="button" onClick={requestOriginLocation} aria-label="Meinen Standort als Startpunkt verwenden" title="Meinen Standort als Startpunkt verwenden">
                         {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={17} /> : <LocateFixed size={17} />}
                       </button>
                     </form>
@@ -617,14 +923,14 @@ function NavigationPage() {
               )}
               <div className="destination-field">
                 {destination ? (
-                  <span className="field-label">Bİ</span>
+                  <span className="field-label">NACH</span>
                 ) : (
-                  <label className="field-label" htmlFor="destination-search">Bİ</label>
+                  <label className="field-label" htmlFor="destination-search">NACH</label>
                 )}
                 {destination ? (
                   <div className="selected-destination">
                     <span>{destinationName}</span>
-                    <button type="button" onClick={clearDestination} aria-label="Armancê jê bibe"><X size={16} /></button>
+                    <button type="button" onClick={clearDestination} aria-label="Ziel entfernen"><X size={16} /></button>
                   </div>
                 ) : (
                   <form className="search-form" onSubmit={searchPlaces}>
@@ -632,10 +938,10 @@ function NavigationPage() {
                       id="destination-search"
                       value={query}
                       onChange={(event) => setQuery(event.target.value)}
-                      placeholder="Tu dixwazî biçî ku?"
+                      placeholder="Ziel suchen"
                       autoComplete="off"
                     />
-                    <button className="search-submit" type="submit" aria-label="Cihan bigere" disabled={searching}>
+                    <button className="search-submit" type="submit" aria-label="Orte suchen" disabled={searching}>
                       {searching ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}
                     </button>
                   </form>
@@ -648,56 +954,53 @@ function NavigationPage() {
 
         {destination && origin && !isNavigating && !activeSearch && (
           <div className="route-action-footer">
+            <div className="travel-mode-picker" role="group" aria-label="Verkehrsmittel">
+              <button
+                className={`travel-mode-button ${travelMode === 'driving' ? 'travel-mode-button--active' : ''}`}
+                type="button"
+                onClick={() => void selectTravelMode('driving')}
+                aria-pressed={travelMode === 'driving'}
+              >
+                <CarFront size={19} />
+                <span>Auto</span>
+              </button>
+              <button
+                className={`travel-mode-button ${travelMode === 'foot' ? 'travel-mode-button--active' : ''}`}
+                type="button"
+                onClick={() => void selectTravelMode('foot')}
+                aria-pressed={travelMode === 'foot'}
+              >
+                <Footprints size={19} />
+                <span>Zu Fuß</span>
+              </button>
+            </div>
             <button
-              className={`primary-button ${route ? 'start-button' : ''}`}
+              className={`primary-button ${route?.mode === travelMode ? 'start-button' : ''}`}
               type="button"
               onClick={() => {
-                if (route) startNavigation()
+                if (route?.mode === travelMode) startNavigation()
                 else void calculateRoute()
               }}
               disabled={routing}
             >
-              {routing ? <LoaderCircle className="spin" size={17} /> : route ? <Play size={16} fill="currentColor" /> : <Navigation size={17} />}
-              <span>{routing ? 'Rê tê hesabkirin…' : route ? 'Rêberiyê dest pê bike' : 'Rê hesab bike'}</span>
+              {routing ? <LoaderCircle className="spin" size={17} /> : route?.mode === travelMode ? <Play size={16} fill="currentColor" /> : <Navigation size={17} />}
+              <span>{routing ? 'Route wird berechnet…' : route?.mode === travelMode ? 'Route starten' : 'Route berechnen'}</span>
               {!routing && <ArrowUpRight size={17} className="button-arrow" />}
             </button>
           </div>
         )}
 
-        {isNavigating && route && (
-          <div className={`navigation-drawer ${directionsExpanded ? 'navigation-drawer--expanded' : ''}`}>
-            <button className="navigation-drawer-toggle" type="button" onClick={() => setDirectionsExpanded((expanded) => !expanded)} aria-expanded={directionsExpanded} aria-controls="active-directions">
-              <span className="navigation-drawer-grip" />
-              {directionsExpanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
-              <span className="navigation-drawer-label">{directionsExpanded ? 'RÊBERÎ VEŞÊRE' : 'RÊBERÎ NÎŞAN BIDE'}</span>
-            </button>
-            <div className="directions-section navigation-directions" id="active-directions" hidden={!directionsExpanded}>
-              <div className="directions-heading"><span>PÊŞIYA TE</span><span>{upcomingSteps.length} gav</span></div>
-              <div className="directions-list">
-                {upcomingSteps.map((step, index) => (
-                  <div className={`direction-row ${index === 0 ? 'direction-row--current' : ''}`} key={`${step.maneuver.type}-${step.maneuver.location.join('-')}-${stepIndex + index}`}>
-                    <span className="direction-number"><ManeuverArrow step={step} /></span>
-                    <span className="direction-copy"><strong>{instructionFor(step, index > 0)}</strong><small>{step.name || 'Rêya sereke'}</small></span>
-                    <span className="direction-distance">{formatDistance(step.distance)}</span>
-                  </div>
-                ))}
+        {isNavigating && route && !activeSearch && (
+          <div className="navigation-drawer">
+            <div className="navigation-footer">
+              <div className="navigation-stats" aria-label="Routeninformationen">
+                <div className="navigation-stat"><span>REST</span><strong className="estimate-distance">{formatDistance(liveRemainingDistance)}</strong></div>
+                <div className="navigation-stat"><span>ZEIT</span><strong className="estimate-duration">{formatClockDuration(liveRemainingDuration)}</strong></div>
               </div>
-            </div>
-            <div
-              className="navigation-footer"
-              onTouchStart={(event) => { drawerTouchStartYRef.current = event.touches[0]?.clientY ?? null }}
-              onTouchEnd={(event) => {
-                const startY = drawerTouchStartYRef.current
-                const endY = event.changedTouches[0]?.clientY
-                if (startY !== null && endY !== undefined) {
-                  if (endY < startY - 36) setDirectionsExpanded(true)
-                  if (endY > startY + 36) setDirectionsExpanded(false)
-                }
-                drawerTouchStartYRef.current = null
-              }}
-            >
-              <div className="footer-estimate"><Clock3 size={16} /><strong className="estimate-duration">{formatClockDuration(remainingDuration)}</strong><span>·</span><span className="estimate-distance">{formatDistance(remainingDistance)} mayî</span></div>
-              <button type="button" className="stop-button" onClick={stopNavigation} aria-label="Dawî bîne" title="Dawî bîne"><X size={20} strokeWidth={2.5} /></button>
+              <div className="navigation-arrival-stop">
+                <div className="navigation-stat"><span>ANKUNFT</span><strong>{arrivalTime}</strong></div>
+                <button type="button" className="stop-button" onClick={stopNavigation} aria-label="Navigation beenden" title="Navigation beenden"><X size={20} strokeWidth={2.5} /></button>
+              </div>
             </div>
           </div>
         )}
@@ -705,38 +1008,27 @@ function NavigationPage() {
         {!route && !destination && (
           <div className="empty-route">
             <span className="empty-route-icon"><MapPin size={19} /></span>
-            <div><strong>Rê li benda te ye</strong><p>Cihê xwe bibîne û armanca xwe lê zêde bike.</p></div>
+            <div><strong>Route planen</strong><p>Wählen Sie einen Startpunkt und ein Ziel.</p></div>
           </div>
         )}
 
         <footer className="panel-footer">
-          <span><i /> XIZMETÊN VEKIRÎ</span>
+          <span><i /> OFFENE DIENSTE</span>
           <span>OSM <b>·</b> OSRM <b>·</b> NOMINATIM</span>
         </footer>
       </section>
 
       {route && !isNavigating && (
-        <section className="route-results-panel" aria-label="Encama rê û rêberî" aria-live="polite">
+        <section className="route-results-panel" aria-label="Routenübersicht" aria-live="polite">
           <section className="route-summary">
-            <div className="summary-topline"><span>RÊYA PÊŞNIYAR</span><button type="button" onClick={() => void calculateRoute()} aria-label="Rê ji nû ve hesab bike" disabled={routing}><RotateCcw size={15} /></button></div>
+            <div className="summary-topline"><span>EMPFOHLENE ROUTE</span><button type="button" onClick={() => void calculateRoute()} aria-label="Route neu berechnen" disabled={routing}><RotateCcw size={15} /></button></div>
+            <div className="summary-destination"><MapPin size={16} /><strong>{destinationName}</strong></div>
             <div className="summary-main">
-              <div className="summary-metric summary-metric--duration"><strong>{formatDuration(route.duration)}</strong><span>DEMÊ RÊWÎTIYÊ</span></div>
+              <div className="summary-metric summary-metric--duration"><strong>{formatDuration(route.duration)}</strong><span>REISEZEIT</span></div>
               <div className="summary-divider" />
-              <div className="summary-metric summary-metric--distance"><strong>{formatDistance(route.distance)}</strong><span>DIRÊJAHÎ</span></div>
+              <div className="summary-metric summary-metric--distance"><strong>{formatDistance(route.distance)}</strong><span>STRECKE</span></div>
             </div>
           </section>
-          <div className="directions-section">
-            <div className="directions-heading"><span>RÊBERÎ</span><span>{upcomingSteps.length} gav</span></div>
-            <div className="directions-list">
-              {upcomingSteps.map((step, index) => (
-                <div className="direction-row" key={`${step.maneuver.type}-${step.maneuver.location.join('-')}-${stepIndex + index}`}>
-                  <span className="direction-number"><ManeuverArrow step={step} /></span>
-                  <span className="direction-copy"><strong>{instructionFor(step)}</strong><small>{step.name || 'Rêya sereke'}</small></span>
-                  <span className="direction-distance">{formatDistance(step.distance)}</span>
-                </div>
-              ))}
-            </div>
-          </div>
         </section>
       )}
 

@@ -4,8 +4,8 @@ import { HeadContent, Scripts, createRootRoute } from '@tanstack/react-router'
 import '../styles.css'
 import 'leaflet/dist/leaflet.css'
 
-const siteName = 'Rêber — Rêberiya rê bi Kurmancî'
-const siteDescription = 'Rêya xwe bibîne. Rêberiya rê bi Kurmancî, bi nexşeya OpenStreetMap û GPS.'
+const siteName = 'Rêber — Navigation auf Deutsch'
+const siteDescription = 'Finden Sie Ihr Ziel und navigieren Sie mit OpenStreetMap und GPS.'
 
 export const Route = createRootRoute({
   head: () => ({
@@ -52,7 +52,7 @@ export const Route = createRootRoute({
 
 function RootDocument({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ku-Latn">
+    <html lang="de">
       <head>
         <HeadContent />
       </head>
