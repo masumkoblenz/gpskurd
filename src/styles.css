@@ -782,6 +782,7 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
 
 .app-menu-popover {
   position: absolute;
+  z-index: 1000;
   top: calc(100% + 9px);
   right: 0;
   display: flex;
@@ -1823,4 +1824,13 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
   .navigation-panel:not(.navigation-panel--active) .route-swap-row { height: 42px; }
   .navigation-panel:not(.navigation-panel--active) .swap-stops-button { width: 36px; height: 36px; }
   .navigation-panel--active > .navigation-drawer { height: auto; max-height: none; transform: none; }
+}
+
+.navigation-panel:has(.app-menu-popover) {
+  z-index: 1000;
+  overflow: visible;
+}
+
+.navigation-panel > .search-results-view:has(.app-menu-popover) {
+  overflow: visible;
 }
