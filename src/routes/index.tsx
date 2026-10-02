@@ -22,6 +22,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { NavigationMap } from '@/components/NavigationMap'
 import {
   distanceBetween,
+  distanceAlongRouteToEnd,
   distanceToRoute,
   findPlaces,
   formatClockDuration,
@@ -564,13 +565,22 @@ function NavigationPage() {
 
         const activeRoute = routeRef.current
         if (activeRoute?.steps.length) {
-          const earlyAnnouncementDistance = travelMode === 'foot' ? 250 : 800
-          const repeatAnnouncementDistance = travelMode === 'foot' ? 60 : 170
-          const turnAnnouncementDistance = travelMode === 'foot' ? 18 : 35
+          const earlyAnnouncementDistance = travelMode === 'foot' ? 150 : 800
+          const repeatAnnouncementDistance = travelMode === 'foot' ? 30 : 170
+          const turnAnnouncementDistance = travelMode === 'foot' ? 10 : 35
           let currentIndex = Math.min(stepIndexRef.current, activeRoute.steps.length - 1)
           let currentStep = activeRoute.steps[currentIndex]
           let [maneuverLon, maneuverLat] = currentStep.maneuver.location
-          let maneuverDistance = distanceBetween(point, { lat: maneuverLat, lon: maneuverLon })
+          const getManeuverDistance = (index: number, maneuverPoint: Point) => {
+            const approachStep = activeRoute.steps[index - 1]
+            const routeDistance = approachStep
+              ? distanceAlongRouteToEnd(point, approachStep.geometry.coordinates)
+              : Number.POSITIVE_INFINITY
+            return Number.isFinite(routeDistance)
+              ? routeDistance
+              : distanceBetween(point, maneuverPoint)
+          }
+          let maneuverDistance = getManeuverDistance(currentIndex, { lat: maneuverLat, lon: maneuverLon })
           const speechLines: string[] = []
           const announcementPhase = (step: RouteStep, distance: number) => {
             if (distance <= turnAnnouncementDistance && step.maneuver.type !== 'arrive') return 'now' as const
@@ -595,7 +605,7 @@ function NavigationPage() {
             currentIndex += 1
             currentStep = activeRoute.steps[currentIndex]
             ;[maneuverLon, maneuverLat] = currentStep.maneuver.location
-            maneuverDistance = distanceBetween(point, { lat: maneuverLat, lon: maneuverLon })
+            maneuverDistance = getManeuverDistance(currentIndex, { lat: maneuverLat, lon: maneuverLon })
             addAnnouncement(currentIndex, currentStep, maneuverDistance)
           }
           if (currentIndex !== stepIndexRef.current) {
@@ -603,10 +613,8 @@ function NavigationPage() {
             setStepIndex(currentIndex)
           }
 
-          const distanceBucket = maneuverDistance >= 1_000
-            ? Math.round(maneuverDistance / 100) * 100
-            : Math.round(maneuverDistance / 50) * 50
-          setNextTurnDistance((previousDistance) => previousDistance === distanceBucket ? previousDistance : distanceBucket)
+          const preciseDistance = Math.max(0, Math.round(maneuverDistance))
+          setNextTurnDistance((previousDistance) => previousDistance === preciseDistance ? previousDistance : preciseDistance)
           if (speechLines.length) queueNavigationSpeech(speechLines.join(' '))
 
           const offRouteDistance = distanceToRoute(point, activeRoute.geometry.coordinates)
@@ -1007,7 +1015,7 @@ function NavigationPage() {
       {speechError && <div className="map-status-banner map-status-banner--error" role="alert">{speechError}</div>}
       {destinationReached && (
         <div className="destination-reached-banner" role="status">
-          <strong>Ziel erreicht.</strong>
+          <strong>Am Ziel</strong>
           <button type="button" onClick={prepareNewRoute}>Neue Route starten</button>
         </div>
       )}
