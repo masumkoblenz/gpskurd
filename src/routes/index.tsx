@@ -4,12 +4,15 @@ import {
   ArrowUpDown,
   ArrowUpRight,
   CarFront,
+  ChevronDown,
+  ChevronUp,
   Clock3,
   Compass,
   Footprints,
   LocateFixed,
   LoaderCircle,
   MapPin,
+  Menu as MenuIcon,
   Minus,
   Navigation,
   Plus,
@@ -29,6 +32,7 @@ import {
   formatClockDuration,
   formatDistance,
   formatDuration,
+  germanInstructionFor,
   getRoute,
   placeSubtitle,
   placeTitle,
@@ -134,6 +138,8 @@ function NavigationPage() {
   const [searchError, setSearchError] = useState('')
   const [routing, setRouting] = useState(false)
   const [isNavigating, setIsNavigating] = useState(false)
+  const [navigationDrawerExpanded, setNavigationDrawerExpanded] = useState(false)
+  const [appMenuOpen, setAppMenuOpen] = useState(false)
   const [followLocation, setFollowLocation] = useState(true)
   const [heading, setHeading] = useState<number | null>(null)
   const [headingUpEnabled, setHeadingUpEnabled] = useState(false)
@@ -170,6 +176,9 @@ function NavigationPage() {
   const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
   const announcedManeuversRef = useRef(new Map<number, Set<'early' | 'repeat' | 'now'>>())
   const currentLocationRef = useRef<Point | null>(null)
+  const appMenuRef = useRef<HTMLDivElement | null>(null)
+  const drawerDragStartRef = useRef<number | null>(null)
+  const suppressDrawerClickRef = useRef(false)
   const originEditedRef = useRef(false)
   const destinationRef = useRef(destination)
   const lastLocationFixAtRef = useRef(0)
@@ -184,6 +193,22 @@ function NavigationPage() {
   routeRef.current = route
   destinationRef.current = destination
   stepIndexRef.current = stepIndex
+
+  useEffect(() => {
+    if (!appMenuOpen || isNavigating) return
+    const closeMenuOutside = (event: PointerEvent) => {
+      if (!appMenuRef.current?.contains(event.target as Node)) setAppMenuOpen(false)
+    }
+    const closeMenuOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setAppMenuOpen(false)
+    }
+    document.addEventListener('pointerdown', closeMenuOutside)
+    document.addEventListener('keydown', closeMenuOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeMenuOutside)
+      document.removeEventListener('keydown', closeMenuOnEscape)
+    }
+  }, [appMenuOpen, isNavigating])
 
   const guidanceSpeechText = (currentGuidance: NavigationGuidance, language = speechLanguageRef.current) =>
     language === 'de' ? currentGuidance.germanText : currentGuidance.kurmanciText
@@ -262,7 +287,7 @@ function NavigationPage() {
       ? error.message
       : 'Die Route konnte nicht berechnet werden. Bitte erneut versuchen.'
 
-  const updateCurrentLocation = (coords: GeolocationCoordinates, forceRender = false) => {
+  const updateCurrentLocation = (coords: GeolocationCoordinates, forceRender = false, forceHeading = false) => {
     if (!Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude)) return null
     const accuracy = coords.accuracy
     const previous = currentLocationRef.current
@@ -297,37 +322,46 @@ function NavigationPage() {
     const minimumCourseSpeed = travelMode === 'foot' ? 0.35 : 1.2
     const maximumCourseAccuracy = travelMode === 'foot' ? 25 : 35
     const hasReliableCourse = accuracy <= maximumCourseAccuracy && coords.speed !== null && coords.speed > minimumCourseSpeed && course !== null && Number.isFinite(course)
-    if (hasReliableCourse && headingUpRef.current) {
+    if (hasReliableCourse && (headingUpRef.current || forceHeading)) {
       setHeading((oldHeading) => {
         if (oldHeading === null) return course
         const difference = Math.abs(((course - oldHeading + 540) % 360) - 180)
         return difference > 12 ? course : oldHeading
       })
-    } else if (headingUpRef.current) {
+    } else if (headingUpRef.current || forceHeading) {
       setHeading(null)
     }
 
     return incoming
   }
 
-  const requestLocation = () => {
+  const requestLocation = (onLocated?: (point: Point) => void) => {
     if (!navigator.geolocation) {
       setGpsStatus('error')
       setGpsMessage('GPS wird von diesem Gerät nicht unterstützt.')
+      if (onLocated && currentLocationRef.current) {
+        setCurrentLocation(currentLocationRef.current)
+        onLocated(currentLocationRef.current)
+      }
       return
     }
     setGpsStatus('loading')
     setGpsMessage('')
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const point = updateCurrentLocation(coords, true)
+        const point = updateCurrentLocation(coords, true, Boolean(onLocated))
         if (!point) return
         setFollowLocation(true)
-        setMapCenterRequest((request) => request + 1)
+        if (onLocated) onLocated(point)
+        else setMapCenterRequest((request) => request + 1)
       },
       () => {
         setGpsStatus('error')
         setGpsMessage('Standort nicht verfügbar.')
+        if (onLocated && currentLocationRef.current) {
+          setCurrentLocation(currentLocationRef.current)
+          onLocated(currentLocationRef.current)
+        }
       },
       { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
     )
@@ -879,6 +913,8 @@ function NavigationPage() {
 
   const startNavigation = () => {
     if (!route || route.mode !== travelMode) return
+    setNavigationDrawerExpanded(false)
+    setAppMenuOpen(false)
     const navigationSessionId = ++navigationSessionRef.current
     lastLocationRenderRef.current = 0
     lastRerouteRef.current = 0
@@ -918,6 +954,7 @@ function NavigationPage() {
   const stopNavigation = (preserveSpeech = false) => {
     navigationSessionRef.current += 1
     setIsNavigating(false)
+    setNavigationDrawerExpanded(false)
     setFollowLocation(false)
     setHeading(null)
     setRouting(false)
@@ -941,8 +978,7 @@ function NavigationPage() {
   const returnToDrivingPerspective = () => {
     setFollowLocation(true)
     setHeadingUpEnabled(true)
-    setDrivingPerspectiveRequest((request) => request + 1)
-    requestLocation()
+    requestLocation(() => setDrivingPerspectiveRequest((request) => request + 1))
   }
 
   const prepareNewRoute = () => {
@@ -1078,6 +1114,25 @@ function NavigationPage() {
           setHeadingUpEnabled(false)
         }}
       />
+      {!isNavigating && (
+        <div className="app-menu-anchor" ref={appMenuRef}>
+          <button
+            className="app-menu-trigger"
+            type="button"
+            aria-label={appMenuOpen ? 'Menü schließen' : 'Menü öffnen'}
+            aria-expanded={appMenuOpen}
+            aria-controls={appMenuOpen ? 'app-settings-menu' : undefined}
+            onClick={() => setAppMenuOpen((open) => !open)}
+          >
+            <MenuIcon size={19} />
+          </button>
+          {appMenuOpen && (
+            <div className="app-menu-popover" id="app-settings-menu" role="region" aria-label="Sprachauswahl">
+              <SpeechLanguagePicker language={speechLanguage} onChange={changeSpeechLanguage} />
+            </div>
+          )}
+        </div>
+      )}
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
         <span>Rêber</span>
@@ -1314,8 +1369,46 @@ function NavigationPage() {
         )}
 
         {isNavigating && route && !activeSearch && (
-          <div className="navigation-drawer">
-            <SpeechLanguagePicker language={speechLanguage} onChange={changeSpeechLanguage} />
+          <div className={`navigation-drawer ${navigationDrawerExpanded ? 'navigation-drawer--expanded' : ''}`}>
+            <button
+              className="navigation-drawer-toggle"
+              type="button"
+              aria-expanded={navigationDrawerExpanded}
+              aria-controls={navigationDrawerExpanded ? 'navigation-directions' : undefined}
+              aria-label={navigationDrawerExpanded ? 'Wegbeschreibung einklappen' : 'Wegbeschreibung öffnen'}
+              onPointerDown={(event) => {
+                drawerDragStartRef.current = event.clientY
+                suppressDrawerClickRef.current = false
+                event.currentTarget.setPointerCapture(event.pointerId)
+              }}
+              onPointerUp={(event) => {
+                const startY = drawerDragStartRef.current
+                drawerDragStartRef.current = null
+                if (startY === null) return
+                const movement = event.clientY - startY
+                if (movement < -28) {
+                  setNavigationDrawerExpanded(true)
+                  suppressDrawerClickRef.current = true
+                } else if (movement > 28) {
+                  setNavigationDrawerExpanded(false)
+                  suppressDrawerClickRef.current = true
+                }
+              }}
+              onPointerCancel={() => {
+                drawerDragStartRef.current = null
+              }}
+              onClick={() => {
+                if (suppressDrawerClickRef.current) {
+                  suppressDrawerClickRef.current = false
+                  return
+                }
+                setNavigationDrawerExpanded((expanded) => !expanded)
+              }}
+            >
+              <span className="navigation-drawer-grip" />
+              <span className="navigation-drawer-label">Wegbeschreibung</span>
+              {navigationDrawerExpanded ? <ChevronDown size={16} /> : <ChevronUp size={16} />}
+            </button>
             <div className="navigation-footer">
               <div className="navigation-stats" aria-label="Routeninformationen">
                 <div className="navigation-stat"><span>REST</span><strong className="estimate-distance">{formatDistance(liveRemainingDistance)}</strong></div>
@@ -1326,6 +1419,25 @@ function NavigationPage() {
                 <button type="button" className="stop-button" onClick={() => stopNavigation()} aria-label="Navigation beenden" title="Navigation beenden"><X size={20} strokeWidth={2.5} /></button>
               </div>
             </div>
+            {navigationDrawerExpanded && (
+              <section className="navigation-directions" id="navigation-directions" aria-label="Wegbeschreibung">
+                <div className="directions-heading">
+                  <span>ROUTENSCHRITTE</span>
+                  <span>{Math.max(0, route.steps.length - stepIndex)} SCHRITTE</span>
+                </div>
+                <div className="directions-list" role="list">
+                  {route.steps.slice(stepIndex).map((step, index) => (
+                    <div className={`direction-row ${index === 0 ? 'direction-row--current' : ''}`} key={`${step.maneuver.type}-${step.maneuver.location.join(',')}-${index}`} role="listitem">
+                      <span className="direction-number"><ManeuverArrow step={step} /></span>
+                      <span className="direction-copy">
+                        <strong>{germanInstructionFor(step, false)}</strong>
+                      </span>
+                      <span className="direction-distance">{formatDistance(step.distance)}</span>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
 
