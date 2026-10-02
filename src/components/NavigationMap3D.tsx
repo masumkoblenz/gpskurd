@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import type { LatLngBounds, Map as LeafletMap, ZoomAnimEvent } from 'leaflet'
 import type { GeoJSONSource, Map as VectorMap, Marker, MapLibreEvent } from 'maplibre-gl'
 import type { NavigationRoute, Point } from '@/lib/navigation'
-import type { LaneGuidance } from '@/lib/lane-guidance'
-import { locationMarkup, routePinMarkup, trafficSignalLabel, trafficSignalMarkup, type TrafficSignalNode } from '@/lib/map-markers'
+import { laneSignMarkup, type LaneGuidance } from '@/lib/lane-guidance'
+import { getDrivingCamera, gpsAccuracyRing, projectToRoad, roadLengths, sampleRoad } from '@/lib/driving-perspective'
+import { drivingLocationMarkup, locationMarkup, routePinMarkup, trafficSignalLabel, trafficSignalMarkup, type TrafficSignalNode } from '@/lib/map-markers'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 
@@ -19,7 +20,14 @@ type NavigationMap3DProps = {
   route: NavigationRoute | null
   trafficSignals: TrafficSignalNode[]
   isNavigating: boolean
+  followLocation: boolean
+  headingUpEnabled: boolean
+  heading: number | null
+  speed: number | null
+  gpsAccuracy: number | null
+  activeStepIndex: number
   drivingPerspectiveRequest: number
+  zoomRequest: { id: number; direction: -1 | 1 }
   onManualPan: () => void
   onViewportReady: (getBounds: (() => LatLngBounds) | null) => void
   onVisibleChange: (visible: boolean) => void
@@ -40,9 +48,18 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
   const syncingToLeafletRef = useRef(false)
   const applyingLeafletCameraRef = useRef(false)
   const pitchAnimationRef = useRef<number | null>(null)
+  const laneMarkerRef = useRef<Marker | null>(null)
+  const manualCameraRef = useRef(false)
+  const drivingZoomRef = useRef<number | null>(null)
+  const lastZoomRequestRef = useRef(props.zoomRequest.id)
   const [ready, setReady] = useState(false)
   const [worldView, setWorldView] = useState(props.leafletMap.getZoom() < 4)
   propsRef.current = props
+  if (props.followLocation) manualCameraRef.current = false
+  const followsDriving = () => {
+    const current = propsRef.current
+    return current.enabled && current.isNavigating && current.route?.mode === 'driving' && current.followLocation && !manualCameraRef.current
+  }
 
   useEffect(() => {
     const leafletMap = props.leafletMap
@@ -71,12 +88,12 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
           bearing: -leafletMap.getBearing(),
           pitch: 0,
           minZoom: -1,
-          maxZoom: 18,
+          maxZoom: 20,
           maxPitch: 55,
           renderWorldCopies: true,
           transformConstrain: (center, zoom) => ({
             center: new maplibre.LngLat(center.lng, Math.max(-85.051129, Math.min(85.051129, center.lat))),
-            zoom: Math.max(-1, Math.min(18, zoom)),
+            zoom: Math.max(-1, Math.min(20, zoom)),
           }),
           pixelRatio: Math.min(window.devicePixelRatio || 1, window.matchMedia('(max-width: 700px)').matches ? 1.5 : 2),
           maxTileCacheSize: 100,
@@ -97,6 +114,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
         }
         syncFromLeaflet = () => {
           if (disposed || syncingToLeafletRef.current) return
+          if (followsDriving()) return
           cameraSourceRef.current = 'leaflet'
           applyingLeafletCameraRef.current = true
           map.jumpTo(readCamera())
@@ -105,6 +123,11 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
         }
         syncZoomFromLeaflet = (event) => {
           if (disposed || syncingToLeafletRef.current) return
+          if (followsDriving()) {
+            drivingZoomRef.current = event.zoom - 1
+            map.easeTo({ zoom: event.zoom - 1, duration: 250 })
+            return
+          }
           cameraSourceRef.current = 'leaflet'
           applyingLeafletCameraRef.current = true
           map.easeTo({ center: [event.center.lng, event.center.lat], zoom: event.zoom - 1, bearing: -leafletMap.getBearing(), duration: 250 })
@@ -115,6 +138,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
 
         const syncToLeaflet = () => {
           if (disposed || cameraSourceRef.current === 'leaflet' || !propsRef.current.enabled) return
+          if (followsDriving()) return
           const center = map.getCenter()
           const previous = leafletMap.getCenter()
           if (Math.abs(previous.lat - center.lat) < 1e-9 && Math.abs(previous.lng - center.lng) < 1e-9 &&
@@ -135,9 +159,16 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
           }
         })
         map.on('move', syncToLeaflet)
-        map.on('zoomend', () => setWorldView(map.getZoom() < 3))
+        map.on('zoomend', (event) => {
+          setWorldView(map.getZoom() < 3)
+          if (event.originalEvent && followsDriving()) drivingZoomRef.current = map.getZoom()
+        })
         map.on('moveend', () => {
           if (applyingLeafletCameraRef.current) return
+          if (followsDriving()) {
+            leafletMap.fire('moveend')
+            return
+          }
           syncToLeaflet()
           if (cameraSourceRef.current === 'vector') {
             cameraSourceRef.current = 'leaflet'
@@ -152,6 +183,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
           if (event.originalEvent && propsRef.current.enabled) {
             if (pitchAnimationRef.current !== null) cancelAnimationFrame(pitchAnimationRef.current)
             pitchAnimationRef.current = null
+            manualCameraRef.current = true
             propsRef.current.onManualPan()
           }
         }
@@ -188,17 +220,16 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
                 paint: { 'line-color': casing ? '#ffffff' : '#2875e5', 'line-width': casing ? 14 : 7, 'line-opacity': casing ? 0.98 : 0.97 },
               }, labelLayer)
             }
-            map.addSource('navigation-lanes', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, tolerance: 0 })
+            map.addSource('navigation-maneuver', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, tolerance: 0 })
             map.addLayer({
-              id: 'navigation-lane-surfaces', type: 'fill', source: 'navigation-lanes', minzoom: 16,
-              filter: ['==', ['get', 'kind'], 'surface'],
-              paint: { 'fill-color': ['case', ['get', 'recommended'], '#188038', '#414950'], 'fill-opacity': 0.9 },
-            }, labelLayer)
-            map.addLayer({
-              id: 'navigation-lane-markings', type: 'line', source: 'navigation-lanes', minzoom: 16,
-              filter: ['!=', ['get', 'kind'], 'surface'],
+              id: 'navigation-maneuver-line', type: 'line', source: 'navigation-maneuver',
               layout: { 'line-cap': 'round', 'line-join': 'round' },
-              paint: { 'line-color': '#ffffff', 'line-width': ['case', ['==', ['get', 'kind'], 'arrow'], 2.5, 1.2], 'line-opacity': 0.95 },
+              paint: { 'line-color': '#df861c', 'line-width': 6, 'line-opacity': 0.95 },
+            }, labelLayer)
+            map.addSource('navigation-accuracy', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, tolerance: 0 })
+            map.addLayer({
+              id: 'navigation-accuracy-area', type: 'fill', source: 'navigation-accuracy',
+              paint: { 'fill-color': '#2875e5', 'fill-opacity': 0.1, 'fill-outline-color': '#2875e5' },
             }, labelLayer)
             setReady(true)
           } catch {
@@ -223,6 +254,8 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
       propsRef.current.onViewportReady(null)
       for (const marker of Object.values(markerRefs.current)) marker?.remove()
       markerRefs.current = {}
+      laneMarkerRef.current?.remove()
+      laneMarkerRef.current = null
       for (const marker of trafficMarkerRefs.current.values()) marker.remove()
       trafficMarkerRefs.current.clear()
       mapRef.current?.getCanvas().removeEventListener('webglcontextlost', fail)
@@ -238,6 +271,10 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
     if (!map || !ready) return
     let exitTimeout: ReturnType<typeof setTimeout> | undefined
     const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    if (followsDriving()) {
+      propsRef.current.onVisibleChange(true)
+      return
+    }
     const initialPitch = map.getPitch()
     const targetPitch = !props.enabled || worldView ? 0 : props.isNavigating ? props.perspectivePitch : 50
     const duration = reduceMotion ? 0 : props.enabled ? 420 : 320
@@ -265,14 +302,93 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
       pitchAnimationRef.current = null
       if (exitTimeout) clearTimeout(exitTimeout)
     }
-  }, [props.enabled, props.perspectivePitch, props.isNavigating, props.drivingPerspectiveRequest, ready, worldView])
+  }, [props.enabled, props.perspectivePitch, props.isNavigating, props.followLocation, props.drivingPerspectiveRequest, ready, worldView])
+
+  useEffect(() => {
+    if (props.followLocation) manualCameraRef.current = false
+    drivingZoomRef.current = null
+  }, [props.followLocation, props.drivingPerspectiveRequest, props.isNavigating])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!props.enabled) {
+      lastZoomRequestRef.current = props.zoomRequest.id
+      return
+    }
+    if (!map || !ready || props.zoomRequest.id === lastZoomRequestRef.current) return
+    lastZoomRequestRef.current = props.zoomRequest.id
+    const zoom = Math.max(map.getMinZoom(), Math.min(map.getMaxZoom(), map.getZoom() + props.zoomRequest.direction))
+    if (followsDriving()) drivingZoomRef.current = zoom
+    map.easeTo({ zoom, duration: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 250 })
+  }, [props.zoomRequest, props.enabled, ready])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready || !followsDriving() || !props.route || !props.currentLocation) return
+    const camera = getDrivingCamera(props.route, props.currentLocation, props.activeStepIndex, props.speed, props.headingUpEnabled ? props.heading : null)
+      ?? { center: props.currentLocation, bearing: map.getBearing(), zoom: 18.5 }
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    cameraSourceRef.current = 'leaflet'
+    map.easeTo({
+      center: [camera.center.lon, camera.center.lat],
+      bearing: props.headingUpEnabled ? camera.bearing : 0,
+      zoom: drivingZoomRef.current ?? camera.zoom,
+      pitch: props.perspectivePitch,
+      offset: [0, Math.min(70, map.getContainer().clientHeight * 0.08)],
+      duration: reduceMotion ? 0 : 900,
+      essential: false,
+    })
+  }, [props.currentLocation, props.route, props.activeStepIndex, props.speed, props.heading, props.headingUpEnabled, props.followLocation, props.enabled, props.perspectivePitch, props.isNavigating, props.drivingPerspectiveRequest, ready])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const maplibre = moduleRef.current
+    if (!map || !maplibre || !ready) return
+    laneMarkerRef.current?.remove()
+    laneMarkerRef.current = null
+    if (!props.laneGuidance) return
+    const element = document.createElement('div')
+    element.className = 'map-lane-sign'
+    element.setAttribute('role', 'img')
+    element.setAttribute('aria-label', 'Rêberiya şerîtên li pêş — şematîk, ne cihê GPS')
+    element.innerHTML = laneSignMarkup(props.laneGuidance)
+    laneMarkerRef.current = new maplibre.Marker({ element, anchor: 'bottom', offset: [0, -16], pitchAlignment: 'viewport', rotationAlignment: 'viewport' })
+      .setLngLat([props.laneGuidance.location.lon, props.laneGuidance.location.lat]).addTo(map)
+  }, [props.laneGuidance, ready])
 
   useEffect(() => {
     const map = mapRef.current
     if (!map || !ready) return
-    const source = map.getSource('navigation-lanes') as GeoJSONSource
-    source.setData(props.laneGuidance?.mapData ?? { type: 'FeatureCollection', features: [] })
-  }, [props.laneGuidance, ready])
+    const data: GeoJSON.FeatureCollection<GeoJSON.LineString> = { type: 'FeatureCollection', features: [] }
+    const route = props.route
+    const step = route?.steps[props.activeStepIndex]
+    const approach = route?.steps[Math.max(0, props.activeStepIndex - 1)]
+    if (props.isNavigating && route?.mode === 'driving' && props.currentLocation && step && approach && !['depart', 'arrive'].includes(step.maneuver.type)) {
+      const coordinates = [...approach.geometry.coordinates, ...step.geometry.coordinates]
+      if (coordinates.length >= 2) {
+        const lengths = roadLengths(coordinates)
+        const position = projectToRoad(props.currentLocation, coordinates, lengths)
+        const target = projectToRoad({ lon: step.maneuver.location[0], lat: step.maneuver.location[1] }, coordinates, lengths)
+        const distance = target.along - position.along
+        if (position.distance <= 40 && distance >= -15 && distance <= 800 && step.geometry.coordinates.length >= 2) {
+          const exitLengths = roadLengths(step.geometry.coordinates)
+          const end = Math.min(220, exitLengths[exitLengths.length - 1])
+          const exitCoordinates = step.geometry.coordinates.filter((_, index) => exitLengths[index] < end)
+          const last = sampleRoad(step.geometry.coordinates, exitLengths, end)
+          exitCoordinates.push([last.lon, last.lat])
+          if (exitCoordinates.length >= 2) data.features.push({ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: exitCoordinates } })
+        }
+      }
+    }
+    ;(map.getSource('navigation-maneuver') as GeoJSONSource).setData(data)
+  }, [props.route, props.currentLocation, props.activeStepIndex, props.isNavigating, ready])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready) return
+    const source = map.getSource('navigation-accuracy') as GeoJSONSource
+    source.setData(props.currentLocation ? gpsAccuracyRing(props.currentLocation, props.gpsAccuracy) : { type: 'FeatureCollection', features: [] })
+  }, [props.currentLocation, props.gpsAccuracy, ready])
 
   useEffect(() => {
     const map = mapRef.current
@@ -283,10 +399,12 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
       features: props.route ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: props.route.geometry.coordinates } }] : [],
     })
     const isFoot = props.route?.mode === 'foot'
-    map.setPaintProperty('navigation-route-casing', 'line-width', isFoot ? 12 : 14)
-    map.setPaintProperty('navigation-route-line', 'line-width', isFoot ? 6 : 7)
+    const driving = props.isNavigating && !isFoot
+    map.setPaintProperty('navigation-route-casing', 'line-width', driving ? 7 : isFoot ? 12 : 14)
+    map.setPaintProperty('navigation-route-line', 'line-width', driving ? 4 : isFoot ? 6 : 7)
     map.setPaintProperty('navigation-route-line', 'line-color', isFoot ? '#198a78' : '#2875e5')
-  }, [props.route, ready])
+    map.setPaintProperty('building-3d', 'fill-extrusion-opacity', driving ? 0.25 : 0.88)
+  }, [props.route, props.isNavigating, ready])
 
   useEffect(() => {
     const map = mapRef.current
@@ -294,6 +412,10 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
     if (!map || !maplibre || !ready) return
     const updateMarker = (kind: 'origin' | 'destination' | 'location', point: Point | null) => {
       const previous = markerRefs.current[kind]
+      const driving = kind === 'location' && props.isNavigating && props.route?.mode === 'driving'
+      const course = driving && props.route && props.currentLocation
+        ? getDrivingCamera(props.route, props.currentLocation, props.activeStepIndex, props.speed, props.heading)?.bearing ?? 0
+        : 0
       if (!point) {
         previous?.remove()
         delete markerRefs.current[kind]
@@ -301,24 +423,30 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
       }
       if (previous) {
         previous.setLngLat([point.lon, point.lat])
+        if (kind === 'location') {
+          previous.getElement().innerHTML = driving ? drivingLocationMarkup : locationMarkup
+          previous.setRotationAlignment(driving ? 'map' : 'viewport')
+          previous.setRotation(course)
+        }
         return
       }
       const element = document.createElement('div')
       element.className = `map-marker map-marker--${kind} map-3d-marker`
-      element.innerHTML = kind === 'location' ? locationMarkup : routePinMarkup(kind === 'origin' ? 'Startpunkt' : 'Ziel')
+      element.innerHTML = kind === 'location' ? driving ? drivingLocationMarkup : locationMarkup : routePinMarkup(kind === 'origin' ? 'Startpunkt' : 'Ziel')
       markerRefs.current[kind] = new maplibre.Marker({
         element,
         anchor: kind === 'location' ? 'center' : 'bottom',
         offset: kind === 'location' ? [0, 0] : [0, 2],
         pitchAlignment: 'viewport',
-        rotationAlignment: 'viewport',
+        rotationAlignment: driving ? 'map' : 'viewport',
+        rotation: course,
         subpixelPositioning: true,
       }).setLngLat([point.lon, point.lat]).addTo(map)
     }
     updateMarker('origin', props.origin)
     updateMarker('destination', props.destination)
     updateMarker('location', props.currentLocation)
-  }, [props.origin, props.destination, props.currentLocation, ready])
+  }, [props.origin, props.destination, props.currentLocation, props.heading, props.speed, props.route, props.isNavigating, props.activeStepIndex, ready])
 
   useEffect(() => {
     const map = mapRef.current

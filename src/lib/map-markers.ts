@@ -15,3 +15,5 @@ export function routePinMarkup(label: string) {
 }
 
 export const locationMarkup = '<span role="img" aria-label="Ihr Standort"><i></i></span>'
+
+export const drivingLocationMarkup = '<span class="driving-location" role="img" aria-label="Cihê GPS — şerîta niha nayê zanîn"><svg viewBox="0 0 44 44" aria-hidden="true"><path d="M22 4 36 35 22 29 8 35Z" fill="#2875e5" stroke="#fff" stroke-width="3" stroke-linejoin="round"/></svg></span>'

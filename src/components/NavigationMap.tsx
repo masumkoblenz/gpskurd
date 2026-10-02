@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LatLngBounds, Map as LeafletMap, Marker, Polyline, TileLayer } from 'leaflet'
 import type { NavigationRoute, Point } from '@/lib/navigation'
-import type { LaneGuidance } from '@/lib/lane-guidance'
+import { laneSignMarkup, type LaneGuidance } from '@/lib/lane-guidance'
 import { locationMarkup, routePinMarkup, trafficSignalLabel, trafficSignalMarkup, type TrafficSignalNode } from '@/lib/map-markers'
 
 import NavigationMap3D from './NavigationMap3D'
@@ -14,6 +14,9 @@ type NavigationMapProps = {
   currentLocation: Point | null
   route: NavigationRoute | null
   isNavigating: boolean
+  speed: number | null
+  gpsAccuracy: number | null
+  activeStepIndex: number
   followLocation: boolean
   headingUpEnabled: boolean
   heading: number | null
@@ -64,6 +67,9 @@ export function NavigationMap({
   currentLocation,
   route,
   isNavigating,
+  speed,
+  gpsAccuracy,
+  activeStepIndex,
   followLocation,
   headingUpEnabled,
   heading,
@@ -125,7 +131,7 @@ export function NavigationMap({
         zoomControl: false,
         attributionControl: true,
         minZoom: 0,
-        maxZoom: 19,
+        maxZoom: 21,
         zoomSnap: 0.25,
         zoomDelta: 1,
         wheelPxPerZoomLevel: 120,
@@ -154,7 +160,8 @@ export function NavigationMap({
         .tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
           className: 'navigation-basemap-tiles',
           minZoom: 0,
-          maxZoom: 19,
+          maxZoom: 21,
+          maxNativeZoom: 19,
           updateWhenZooming: false,
           keepBuffer: 3,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> Mitwirkende',
@@ -280,52 +287,32 @@ export function NavigationMap({
     const map = mapRef.current
     if (!map || !mapReady || !laneGuidance) return
     let disposed = false
-    let layer: import('leaflet').GeoJSON | undefined
-    let removeZoomListener: (() => void) | undefined
+    let marker: Marker | undefined
     void import('leaflet').then((leaflet) => {
       if (disposed) return
-      if (!map.getPane('navigation-lanes')) {
-        const pane = map.createPane('navigation-lanes')
-        pane.style.zIndex = '450'
-        pane.style.pointerEvents = 'none'
-      }
-      layer = leaflet.geoJSON(laneGuidance.mapData, {
-        pane: 'navigation-lanes',
+      marker = leaflet.marker([laneGuidance.location.lat, laneGuidance.location.lon], {
         interactive: false,
-        style: (feature) => ({
-          color: feature?.properties.kind === 'surface' ? 'transparent' : '#ffffff',
-          weight: feature?.properties.kind === 'surface' ? 0 : feature?.properties.kind === 'arrow' ? 2.5 : 1.2,
-          opacity: 0.95,
-          fillColor: feature?.properties.recommended ? '#188038' : '#414950',
-          fillOpacity: 0.9,
-          lineCap: 'round',
-          lineJoin: 'round',
-        }),
-      })
-      const updateVisibility = () => {
-        if (!layer) return
-        if (map.getZoom() >= 17) layer.addTo(map)
-        else layer.remove()
-      }
-      map.on('zoomend', updateVisibility)
-      updateVisibility()
-      removeZoomListener = () => map.off('zoomend', updateVisibility)
+        icon: leaflet.divIcon({ className: 'map-lane-sign', html: laneSignMarkup(laneGuidance), iconSize: [Math.min(320, laneGuidance.lanes.length * 28 + 24), 70], iconAnchor: [Math.min(320, laneGuidance.lanes.length * 28 + 24) / 2, 86] }),
+      }).addTo(map)
     })
     return () => {
       disposed = true
-      removeZoomListener?.()
-      layer?.remove()
+      marker?.remove()
     }
   }, [laneGuidance, mapReady])
 
   useEffect(() => {
     const map = mapRef.current
     if (!map || !mapReady) return
+    if (threeDVisible) {
+      lastZoomRequestRef.current = zoomRequest.id
+      return
+    }
     if (zoomRequest.id === lastZoomRequestRef.current) return
     lastZoomRequestRef.current = zoomRequest.id
     if (zoomRequest.direction > 0) map.zoomIn(1)
     else map.zoomOut(1)
-  }, [zoomRequest, mapReady])
+  }, [zoomRequest, mapReady, threeDVisible])
 
   useEffect(() => {
     const map = mapRef.current
@@ -491,7 +478,14 @@ export function NavigationMap({
             route={route}
             trafficSignals={trafficSignals}
             isNavigating={isNavigating}
+            followLocation={followLocation}
+            headingUpEnabled={headingUpEnabled}
+            heading={heading}
+            speed={speed}
+            gpsAccuracy={gpsAccuracy}
+            activeStepIndex={activeStepIndex}
             drivingPerspectiveRequest={drivingPerspectiveRequest}
+            zoomRequest={zoomRequest}
             onManualPan={() => {
               hasTrafficSignalContextRef.current = true
               manualCameraChangeRef.current = true
