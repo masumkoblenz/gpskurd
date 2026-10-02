@@ -24,8 +24,10 @@ import {
   Volume2,
   X,
 } from 'lucide-react'
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { NavigationMap } from '@/components/NavigationMap'
+import LaneGuidance from '@/components/LaneGuidance'
+import { getLaneGuidance } from '@/lib/lane-guidance'
 import {
   createNavigationGuidance,
   distanceBetween,
@@ -168,7 +170,8 @@ function NavigationPage() {
   const [followLocation, setFollowLocation] = useState(true)
   const [heading, setHeading] = useState<number | null>(null)
   const [headingUpEnabled, setHeadingUpEnabled] = useState(false)
-  const [threeDEnabled, setThreeDEnabled] = useState(false)
+  const [mapPerspective, setMapPerspective] = useState<'top' | 'tilted' | 'driving'>('top')
+  const threeDEnabled = mapPerspective !== 'top'
   const [zoomRequest, setZoomRequest] = useState<ZoomRequest>({ id: 0, direction: 1 })
   const [guidance, setGuidance] = useState<NavigationGuidance | null>(null)
   const [destinationReached, setDestinationReached] = useState(false)
@@ -767,6 +770,11 @@ function NavigationPage() {
 
   const activeGuidance = guidance?.route === route ? guidance : null
   const activeStep = activeGuidance?.step
+  const laneGuidance = useMemo(() => isNavigating && !destinationReached
+    ? getLaneGuidance(route, currentLocation, activeGuidance?.stepIndex ?? stepIndex)
+    : null, [isNavigating, destinationReached, route, currentLocation, activeGuidance?.stepIndex, stepIndex])
+  const perspectiveLabel = mapPerspective === 'top' ? '2D' : mapPerspective === 'tilted' ? '25°' : '3D'
+  const nextPerspectiveLabel = mapPerspective === 'top' ? 'Nexşeya hinekî xwar' : mapPerspective === 'tilted' ? 'Dîtina ajotinê ya 3D' : 'Nexşeya 2D ji jor'
 
   useEffect(() => {
     if (!speechCue || !voiceEnabled || speechCue.id === processedSpeechEventRef.current) return
@@ -1131,7 +1139,7 @@ function NavigationPage() {
         <div className="app-menu-popover" id="app-settings-menu" role="region" aria-label="Menü">
           {appMenuSection === 'main' ? (
             <div className="app-menu-items">
-              <button className="app-menu-item app-menu-toggle" type="button" role="switch" aria-checked={threeDEnabled} onClick={() => setThreeDEnabled((enabled) => !enabled)}>
+              <button className="app-menu-item app-menu-toggle" type="button" role="switch" aria-checked={threeDEnabled} onClick={() => setMapPerspective((perspective) => perspective === 'top' ? 'driving' : 'top')}>
                 <Box size={17} aria-hidden="true" />
                 <span>3D-Karte</span>
                 <span className="map-mode-switch" aria-hidden="true"><span /></span>
@@ -1183,13 +1191,28 @@ function NavigationPage() {
           setHeadingUpEnabled(false)
         }}
         threeDEnabled={threeDEnabled}
-        onThreeDUnavailable={() => setThreeDEnabled(false)}
+        perspectivePitch={mapPerspective === 'tilted' ? 25 : 55}
+        laneGuidance={laneGuidance}
+        onThreeDUnavailable={() => setMapPerspective('top')}
       />
+      {laneGuidance && !activeSearch && <LaneGuidance guidance={laneGuidance} />}
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
         <span>Rêber</span>
       </div>
       <div className={`map-location-control ${isNavigating ? 'map-location-control--navigation' : ''}`}>
+        {isNavigating && route?.mode === 'driving' && (
+          <button
+            className="map-control-button map-perspective-button"
+            type="button"
+            onClick={() => setMapPerspective((perspective) => perspective === 'top' ? 'tilted' : perspective === 'tilted' ? 'driving' : 'top')}
+            aria-label={`${perspectiveLabel} — ${nextPerspectiveLabel}`}
+            title={nextPerspectiveLabel}
+          >
+            <Box size={17} aria-hidden="true" />
+            <span aria-live="polite">{perspectiveLabel}</span>
+          </button>
+        )}
         {isNavigating && (
           <button
             className="map-control-button"
