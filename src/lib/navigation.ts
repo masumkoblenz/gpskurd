@@ -78,7 +78,7 @@ export async function getRoute(start: Point, end: Point, mode: TravelMode = 'dri
 }
 
 export function formatDistance(meters: number) {
-  if (meters < 1000) return `${Math.max(0, Math.round(meters / 50) * 50)} m`
+  if (meters < 1000) return `${Math.max(0, Math.round(meters))} m`
   return `${(meters / 1000).toFixed(1).replace('.', ',')} km`
 }
 
@@ -225,6 +225,44 @@ export function distanceToRoute(point: Point, coordinates: [number, number][]) {
     closest = Math.min(closest, distance)
   }
   return closest
+}
+
+export function distanceAlongRouteToEnd(point: Point, coordinates: [number, number][]) {
+  if (coordinates.length < 2) return Number.POSITIVE_INFINITY
+
+  const latitudeScale = 111_320
+  const longitudeScale = latitudeScale * Math.cos((point.lat * Math.PI) / 180)
+  let closestDistance = Number.POSITIVE_INFINITY
+  let distanceAlong = 0
+  let distanceBeforeSegment = 0
+
+  for (let index = 1; index < coordinates.length; index += 1) {
+    const [previousLon, previousLat] = coordinates[index - 1]
+    const [lon, lat] = coordinates[index]
+    const startX = (previousLon - point.lon) * longitudeScale
+    const startY = (previousLat - point.lat) * latitudeScale
+    const endX = (lon - point.lon) * longitudeScale
+    const endY = (lat - point.lat) * latitudeScale
+    const segmentX = endX - startX
+    const segmentY = endY - startY
+    const segmentLengthSquared = segmentX * segmentX + segmentY * segmentY
+    const progress = segmentLengthSquared
+      ? Math.min(1, Math.max(0, -(startX * segmentX + startY * segmentY) / segmentLengthSquared))
+      : 0
+    const distanceToSegment = Math.hypot(startX + progress * segmentX, startY + progress * segmentY)
+    const segmentLength = distanceBetween(
+      { lat: previousLat, lon: previousLon },
+      { lat, lon },
+    )
+
+    if (distanceToSegment < closestDistance) {
+      closestDistance = distanceToSegment
+      distanceAlong = distanceBeforeSegment + progress * segmentLength
+    }
+    distanceBeforeSegment += segmentLength
+  }
+
+  return Math.max(0, distanceBeforeSegment - distanceAlong)
 }
 
 export function distanceBetween(first: Point, second: Point) {

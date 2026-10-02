@@ -742,6 +742,101 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
   }
 }
 
+.navigation-basemap-tiles .leaflet-tile {
+  filter: saturate(.68) contrast(1.025) brightness(1.025);
+  opacity: .94;
+}
+
+.map-marker {
+  border: 0;
+  background: transparent;
+}
+
+.map-marker--origin,
+.map-marker--destination {
+  display: grid;
+  place-items: center;
+  filter: drop-shadow(0 2px 4px #263b3438);
+}
+
+.map-marker--origin span,
+.map-marker--destination span {
+  display: block;
+  width: 36px;
+  height: 44px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.map-marker--origin svg,
+.map-marker--destination svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.map-marker--origin path { fill: #398574; }
+.map-marker--destination path { fill: #d66f5d; }
+.map-marker--origin circle,
+.map-marker--destination circle { fill: #fff; }
+
+.map-marker--location {
+  display: grid;
+  place-items: center;
+}
+
+.map-marker--location span {
+  position: relative;
+  display: block;
+  width: 44px;
+  height: 44px;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  box-shadow: none;
+}
+
+.map-marker--location span::before {
+  position: absolute;
+  inset: 3px;
+  border: 1px solid #347bd12e;
+  border-radius: 50%;
+  background: #347bd119;
+  content: '';
+  animation: location-pulse 2.8s ease-out infinite;
+}
+
+.map-marker--location i {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 19px;
+  height: 19px;
+  border: 3px solid #fff;
+  border-radius: 50%;
+  background: #2875e5;
+  box-shadow: 0 1px 6px #173c7066;
+  transform: translate(-50%, -50%);
+}
+
+.navigation-route-casing path {
+  filter: drop-shadow(0 1px 2px #283b3838);
+}
+
+.navigation-route--active path { opacity: 1; }
+
+@keyframes location-pulse {
+  0% { transform: scale(.72); opacity: .82; }
+  75%, 100% { transform: scale(1.12); opacity: .15; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .map-marker--location span::before { animation: none; }
+}
+
 .search-submit.search-submit--small {
   width: 28px;
   min-width: 28px;

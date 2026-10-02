@@ -52,8 +52,9 @@ export function NavigationMap({
     origin: Marker | null
     destination: Marker | null
     location: Marker | null
+    routeCasing: Polyline | null
     route: Polyline | null
-  }>({ origin: null, destination: null, location: null, route: null })
+  }>({ origin: null, destination: null, location: null, routeCasing: null, route: null })
 
   onManualPanRef.current = onManualPan
 
@@ -85,6 +86,7 @@ export function NavigationMap({
       map.on('rotatestart', exitDrivingPerspective)
       leaflet
         .tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          className: 'navigation-basemap-tiles',
           maxZoom: 19,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> Mitwirkende',
         })
@@ -129,7 +131,7 @@ export function NavigationMap({
     void import('leaflet').then((leaflet) => {
       if (mapRef.current !== map) return
       const layers = layersRef.current
-      for (const layer of [layers.origin, layers.destination, layers.route]) {
+      for (const layer of [layers.origin, layers.destination, layers.routeCasing, layers.route]) {
         if (layer) map.removeLayer(layer)
       }
 
@@ -138,9 +140,9 @@ export function NavigationMap({
           .marker([point.lat, point.lon], {
             icon: leaflet.divIcon({
               className,
-              html: `<span aria-label="${label}"></span>`,
-              iconSize: [28, 28],
-              iconAnchor: [14, 14],
+              html: `<span role="img" aria-label="${label}"><svg viewBox="0 0 36 44" aria-hidden="true"><path d="M18 2C9.2 2 2 9.1 2 17.7c0 11.1 16 24.3 16 24.3s16-13.2 16-24.3C34 9.1 26.8 2 18 2Z"/><circle cx="18" cy="17" r="6"/></svg></span>`,
+              iconSize: [36, 44],
+              iconAnchor: [18, 42],
             }),
           })
           .addTo(map)
@@ -149,16 +151,32 @@ export function NavigationMap({
       layersRef.current.destination = destination
         ? makeMarker(destination, 'map-marker map-marker--destination', 'Ziel')
         : null
-      layersRef.current.route = route
-        ? leaflet
-            .polyline(
-              route.geometry.coordinates.map(([lon, lat]) => leaflet.latLng(lat, lon)),
-              { color: '#1a73e8', weight: 6, opacity: 0.94, lineCap: 'round', lineJoin: 'round' },
-            )
-            .addTo(map)
+      const routeCoordinates = route?.geometry.coordinates.map(([lon, lat]) => leaflet.latLng(lat, lon))
+      const routeMode = route?.mode === 'foot' ? 'foot' : 'driving'
+      layersRef.current.routeCasing = routeCoordinates?.length
+        ? leaflet.polyline(routeCoordinates, {
+            className: `navigation-route-casing navigation-route--${routeMode}`,
+            color: '#ffffff',
+            weight: routeMode === 'foot' ? 12 : 14,
+            opacity: 0.98,
+            lineCap: 'round',
+            lineJoin: 'round',
+            interactive: false,
+          }).addTo(map)
+        : null
+      layersRef.current.route = routeCoordinates?.length
+        ? leaflet.polyline(routeCoordinates, {
+            className: `navigation-route navigation-route--${routeMode}${isNavigating ? ' navigation-route--active' : ''}`,
+            color: routeMode === 'foot' ? '#198a78' : '#2875e5',
+            weight: routeMode === 'foot' ? 6 : 7,
+            opacity: 0.97,
+            lineCap: 'round',
+            lineJoin: 'round',
+            interactive: false,
+          }).addTo(map)
         : null
     })
-  }, [origin, destination, route, mapReady])
+  }, [origin, destination, route, isNavigating, mapReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -179,9 +197,9 @@ export function NavigationMap({
         .marker([currentLocation.lat, currentLocation.lon], {
           icon: leaflet.divIcon({
             className: 'map-marker map-marker--location',
-            html: '<span aria-label="Ihr Standort"></span>',
-            iconSize: [28, 28],
-            iconAnchor: [14, 14],
+            html: '<span role="img" aria-label="Ihr Standort"><i></i></span>',
+            iconSize: [44, 44],
+            iconAnchor: [22, 22],
           }),
         })
         .addTo(map)
