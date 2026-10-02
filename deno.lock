@@ -26,6 +26,7 @@
         "npm:highlight.js@11.11.1",
         "npm:leaflet@^1.9.4",
         "npm:lucide-react@0.576.0",
+        "npm:maplibre-gl@^6.11.2",
         "npm:onnxruntime-web@1.30.0",
         "npm:react-dom@19.2.8",
         "npm:react@19.2.8",
