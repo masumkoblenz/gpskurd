@@ -106,6 +106,7 @@ function NavigationPage() {
   const [nextTurnDistance, setNextTurnDistance] = useState<number | null>(null)
   const [destinationReached, setDestinationReached] = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
+  const [speechError, setSpeechError] = useState('')
   const [mapCenterRequest, setMapCenterRequest] = useState(0)
   const [stepIndex, setStepIndex] = useState(0)
   const [gpsStatus, setGpsStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle')
@@ -123,12 +124,15 @@ function NavigationPage() {
   const ttsWorkerRef = useRef<Worker | null>(null)
   const speechRequestRef = useRef(0)
   const currentLocationRef = useRef<Point | null>(null)
+  const originEditedRef = useRef(false)
+  const destinationRef = useRef(destination)
   const lastLocationFixAtRef = useRef(0)
   const lastLocationRenderRef = useRef(0)
   const headingUpRef = useRef(headingUpEnabled)
   const stopNavigationRef = useRef<() => void>(() => undefined)
   headingUpRef.current = headingUpEnabled
   routeRef.current = route
+  destinationRef.current = destination
   stepIndexRef.current = stepIndex
 
   const prepareAudio = async () => {
@@ -220,7 +224,6 @@ function NavigationPage() {
         const point = updateCurrentLocation(coords, true)
         if (!point) return
         setFollowLocation(true)
-        if (isNavigating) setHeadingUpEnabled(true)
         setMapCenterRequest((request) => request + 1)
       },
       () => {
@@ -233,6 +236,7 @@ function NavigationPage() {
   }
 
   const requestOriginLocation = () => {
+    originEditedRef.current = false
     if (!navigator.geolocation) {
       setGpsStatus('error')
       setGpsMessage('GPS wird von diesem Gerät nicht unterstützt.')
@@ -245,17 +249,20 @@ function NavigationPage() {
       ({ coords }) => {
         const point = updateCurrentLocation(coords, true)
         if (!point) return
+        if (originEditedRef.current) return
         const requestId = ++routeRequestRef.current
         setOrigin(point)
         setOriginName('Mein Standort')
+        setOriginQuery('Mein Standort')
         setFollowLocation(true)
         setMapCenterRequest((request) => request + 1)
         setRoute(null)
         setStepIndex(0)
-        if (!destination) return
+        const selectedDestination = destinationRef.current
+        if (!selectedDestination) return
         setRouting(true)
         setRouteError('')
-        void getRoute(point, destination, travelMode)
+        void getRoute(point, selectedDestination, travelMode)
           .then((nextRoute) => {
             if (routeRequestRef.current === requestId) setRoute(nextRoute)
           })
@@ -276,6 +283,10 @@ function NavigationPage() {
       { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
     )
   }
+
+  useEffect(() => {
+    requestOriginLocation()
+  }, [])
 
   const searchPlaces = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
@@ -322,6 +333,8 @@ function NavigationPage() {
   const closeSearchResults = () => {
     searchRequestRef.current += 1
     setActiveSearch(null)
+    if (origin) setOriginQuery(originName || 'Mein Standort')
+    if (destination) setQuery(destinationName)
     setResults([])
     setOriginResults([])
     setSearching(false)
@@ -329,13 +342,41 @@ function NavigationPage() {
     setSearchError('')
   }
 
+  const resetRouteForStopEdit = () => {
+    routeRequestRef.current += 1
+    setRoute(null)
+    setRouteError('')
+    setRouting(false)
+    setIsNavigating(false)
+    setStepIndex(0)
+    setDestinationReached(false)
+    setNextTurnDistance(null)
+  }
+
+  const editOriginInput = (value: string) => {
+    originEditedRef.current = true
+    setOriginQuery(value)
+    setOrigin(null)
+    setOriginName('')
+    resetRouteForStopEdit()
+  }
+
+  const editDestinationInput = (value: string) => {
+    setQuery(value)
+    setDestination(null)
+    setDestinationName('')
+    resetRouteForStopEdit()
+  }
+
   const chooseOrigin = async (place: SearchResult) => {
     searchRequestRef.current += 1
     setActiveSearch(null)
     routeRequestRef.current += 1
+    originEditedRef.current = true
     setOrigin({ lat: Number(place.lat), lon: Number(place.lon) })
-    setOriginName(place.display_name.split(',').slice(0, 2).join(', '))
-    setOriginQuery('')
+    const selectedOriginName = place.display_name.split(',').slice(0, 2).join(', ')
+    setOriginName(selectedOriginName)
+    setOriginQuery(selectedOriginName)
     setOriginResults([])
     setRoute(null)
     setRouting(false)
@@ -364,14 +405,20 @@ function NavigationPage() {
     setActiveSearch(null)
     const requestId = ++routeRequestRef.current
     const point = { lat: Number(place.lat), lon: Number(place.lon) }
-    const startPoint = isNavigating ? currentLocationRef.current ?? origin : origin
+    const startPoint = isNavigating
+      ? currentLocationRef.current ?? origin
+      : originName === 'Mein Standort'
+        ? currentLocationRef.current ?? origin
+        : origin
     if (isNavigating && startPoint) {
       setOrigin(startPoint)
       setOriginName('Mein Standort')
+      setOriginQuery('Mein Standort')
     }
     setDestination(point)
-    setDestinationName(place.display_name.split(',').slice(0, 2).join(', '))
-    setQuery('')
+    const selectedDestinationName = place.display_name.split(',').slice(0, 2).join(', ')
+    setDestinationName(selectedDestinationName)
+    setQuery(selectedDestinationName)
     setResults([])
     setOriginResults([])
     setRoute(null)
@@ -379,7 +426,15 @@ function NavigationPage() {
     setDestinationReached(false)
     setIsNavigating(false)
     setStepIndex(0)
-    if (!startPoint) return
+    if (!startPoint) {
+      const hasUnresolvedOrigin = originQuery.trim().length > 0
+      if (!hasUnresolvedOrigin) {
+        setGpsStatus('error')
+        setGpsMessage('Für den Startpunkt wird dein aktueller Standort benötigt. Bitte Standortzugriff erlauben.')
+      }
+      setRouteError(hasUnresolvedOrigin ? 'Bitte wähle einen Startort aus den Suchergebnissen.' : 'Aktueller Standort nicht verfügbar. Standortzugriff erlauben und erneut versuchen.')
+      return
+    }
 
     setRouting(true)
     try {
@@ -407,7 +462,8 @@ function NavigationPage() {
     }
     setRouting(true)
     try {
-      const nextRoute = await getRoute(origin, destination, mode)
+      const startPoint = originName === 'Mein Standort' ? currentLocationRef.current ?? origin : origin
+      const nextRoute = await getRoute(startPoint, destination, mode)
       if (routeRequestRef.current === requestId) setRoute(nextRoute)
     } catch (error) {
       if (routeRequestRef.current === requestId) setRouteError(routeFailureMessage(error))
@@ -422,7 +478,8 @@ function NavigationPage() {
     setRouting(true)
     setRouteError('')
     try {
-      const nextRoute = await getRoute(origin, destination, travelMode)
+      const startPoint = originName === 'Mein Standort' ? currentLocationRef.current ?? origin : origin
+      const nextRoute = await getRoute(startPoint, destination, travelMode)
       if (routeRequestRef.current === requestId) {
         setRoute(nextRoute)
         setStepIndex(0)
@@ -559,12 +616,21 @@ function NavigationPage() {
       const message = event.data
       if (requestCancelled || message.requestId !== requestId) return
 
+      if (message.type === 'error') {
+        setSpeechError('Dengê rêberiyê nayê çêkirin. Dîsa biceribîne.')
+        return
+      }
+
       if (message.type !== 'audio' || !message.samples || !message.sampleRate) return
 
       void (async () => {
         if (audioContext.state === 'suspended') await audioContext.resume()
         if (requestCancelled) return
+        if (audioContext.state !== 'running') throw new Error('audio_context_not_running')
         const samples = new Float32Array(message.samples!)
+        if (!samples.length || !samples.some((sample) => Math.abs(sample) > 0.00001)) {
+          throw new Error('synthesis_returned_silence')
+        }
         const audioBuffer = audioContext.createBuffer(1, samples.length, message.sampleRate!)
         audioBuffer.copyToChannel(samples, 0)
         const source = audioContext.createBufferSource()
@@ -577,10 +643,13 @@ function NavigationPage() {
         }
         audioSourceRef.current = source
         source.start()
-      })().catch(() => undefined)
+        setSpeechError('')
+      })().catch(() => {
+        if (!requestCancelled) setSpeechError('Dengê rêberiyê nayê çêkirin. Dîsa biceribîne.')
+      })
     }
 
-    const handleWorkerError = () => undefined
+    const handleWorkerError = () => setSpeechError('Dengê rêberiyê nayê çêkirin. Dîsa biceribîne.')
 
     worker.addEventListener('message', handleWorkerMessage)
     worker.addEventListener('error', handleWorkerError)
@@ -645,6 +714,12 @@ function NavigationPage() {
     setZoomRequest((request) => ({ id: request.id + 1, direction }))
   }
 
+  const returnToDrivingPerspective = () => {
+    setFollowLocation(true)
+    setHeadingUpEnabled(true)
+    requestLocation()
+  }
+
   const openNavigationSearch = () => {
     setQuery('')
     setResults([])
@@ -654,8 +729,10 @@ function NavigationPage() {
 
   const prepareNewRoute = () => {
     if (currentLocationRef.current) {
+      originEditedRef.current = false
       setOrigin(currentLocationRef.current)
       setOriginName('Mein Standort')
+      setOriginQuery('Mein Standort')
     }
     clearDestination()
   }
@@ -669,6 +746,7 @@ function NavigationPage() {
     routeRequestRef.current += 1
     setDestination(null)
     setDestinationName('')
+    setQuery('')
     setRoute(null)
     setRouteError('')
     setRouting(false)
@@ -679,39 +757,37 @@ function NavigationPage() {
     setOriginResults([])
   }
 
-  const clearOrigin = () => {
-    routeRequestRef.current += 1
-    setOrigin(null)
-    setOriginName('')
-    setOriginQuery('')
-    setOriginResults([])
-    setRoute(null)
-    setRouteError('')
-    setRouting(false)
-    setIsNavigating(false)
-    setStepIndex(0)
-  }
-
   const swapStops = async () => {
-    if (!origin || !destination) return
+    if (!origin && !destination && !originQuery.trim() && !query.trim()) return
     routeRequestRef.current += 1
     const requestId = routeRequestRef.current
+    const previousOrigin = origin
+    const previousDestination = destination
+    const previousOriginName = originName || (origin ? 'Mein Standort' : '')
+    const previousDestinationName = destinationName
+    const nextOriginText = query || destinationName
+    const nextDestinationText = originQuery || previousOriginName
+    originEditedRef.current = true
     setOrigin(destination)
     setDestination(origin)
-    setOriginName(destinationName)
-    setDestinationName(originName || 'Mein Standort')
-    setOriginQuery('')
+    setOriginName(previousDestinationName)
+    setDestinationName(previousOriginName)
+    setOriginQuery(nextOriginText)
     setOriginResults([])
     setRoute(null)
     setRouteError('')
     setRouting(false)
     setIsNavigating(false)
     setStepIndex(0)
-    setQuery('')
+    setQuery(nextDestinationText)
     setResults([])
+    setDestinationReached(false)
+    setNextTurnDistance(null)
+    if (!previousOrigin || !previousDestination) return
+
     setRouting(true)
     try {
-      const nextRoute = await getRoute(destination, origin, travelMode)
+      const nextRoute = await getRoute(previousDestination, previousOrigin, travelMode)
       if (routeRequestRef.current === requestId) setRoute(nextRoute)
     } catch (error) {
       if (routeRequestRef.current === requestId) {
@@ -749,7 +825,10 @@ function NavigationPage() {
         heading={headingUpEnabled ? heading : null}
         centerRequest={mapCenterRequest}
         zoomRequest={zoomRequest}
-        onManualPan={() => setFollowLocation(false)}
+        onManualPan={() => {
+          setFollowLocation(false)
+          setHeadingUpEnabled(false)
+        }}
       />
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
@@ -786,13 +865,14 @@ function NavigationPage() {
         >
           <Compass size={19} />
         </button>
-        <button className={`map-control-button ${followLocation ? 'map-control-button--active' : 'map-control-button--inactive'}`} type="button" onClick={requestLocation} aria-label={followLocation ? 'Standort zentrieren' : 'Standort zentrieren und verfolgen'} aria-pressed={followLocation}>
+        <button className={`map-control-button ${followLocation && headingUpEnabled ? 'map-control-button--active' : 'map-control-button--inactive'}`} type="button" onClick={returnToDrivingPerspective} aria-label="Zur Fahrperspektive zurückkehren" title="Zur Fahrperspektive zurückkehren" aria-pressed={followLocation && headingUpEnabled}>
           {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={19} /> : <LocateFixed size={19} />}
         </button>
       </div>
 
       {gpsMessage && <div className="map-status-banner" role="status">{gpsMessage}</div>}
       {routeError && <div className="map-status-banner map-status-banner--error" role="alert">{routeError}</div>}
+      {speechError && <div className="map-status-banner map-status-banner--error" role="alert">{speechError}</div>}
       {destinationReached && (
         <div className="destination-reached-banner" role="status">
           <strong>Ziel erreicht.</strong>
@@ -880,72 +960,53 @@ function NavigationPage() {
         <div className="route-form-block">
           <div className="route-stops">
             <div className="stop-rail">
-              {destination && <span className="stop-dot stop-dot--start" />}
-              {destination && <span className="stop-line" />}
-              {origin && destination && (
-                <button className="swap-stops-button" type="button" onClick={swapStops} aria-label="Start und Ziel tauschen" title="Start und Ziel tauschen">
-                  <ArrowUpDown size={16} />
-                </button>
-              )}
+              <span className="stop-dot stop-dot--start" />
+              <span className="stop-line" />
+              <button
+                className="swap-stops-button"
+                type="button"
+                onClick={() => void swapStops()}
+                disabled={!origin && !destination && !originQuery.trim() && !query.trim()}
+                aria-label="Start und Ziel tauschen"
+                title="Start und Ziel tauschen"
+              >
+                <ArrowUpDown size={16} />
+              </button>
               <span className="stop-dot stop-dot--end" />
             </div>
             <div className="stop-fields">
-              {destination && (
-                <div className="origin-field">
-                  {origin ? (
-                    <span className="field-label">VON</span>
-                  ) : (
-                    <label className="field-label" htmlFor="origin-search">VON</label>
-                  )}
-                  {origin ? (
-                    <div className="selected-destination selected-origin">
-                      <span>{originName || 'Mein Standort'}</span>
-                      <button type="button" onClick={clearOrigin} aria-label="Startpunkt entfernen"><X size={16} /></button>
-                    </div>
-                  ) : (
-                    <form className="search-form origin-search-form" onSubmit={searchOriginPlaces}>
-                      <input
-                        id="origin-search"
-                        value={originQuery}
-                        onChange={(event) => setOriginQuery(event.target.value)}
-                        placeholder="Startort suchen"
-                        autoComplete="off"
-                      />
-                      <button className="search-submit" type="submit" aria-label="Startort suchen" disabled={searchingOrigin}>
-                        {searchingOrigin ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}
-                      </button>
-                      <button className="origin-location-button" type="button" onClick={requestOriginLocation} aria-label="Meinen Standort als Startpunkt verwenden" title="Meinen Standort als Startpunkt verwenden">
-                        {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={17} /> : <LocateFixed size={17} />}
-                      </button>
-                    </form>
-                  )}
-                </div>
-              )}
+              <div className="origin-field">
+                <label className="field-label" htmlFor="origin-search">VON</label>
+                <form className="search-form origin-search-form" onSubmit={searchOriginPlaces}>
+                  <input
+                    id="origin-search"
+                    value={originQuery}
+                    onChange={(event) => editOriginInput(event.target.value)}
+                    placeholder={gpsStatus === 'loading' ? 'Standort wird ermittelt…' : 'Startort suchen'}
+                    autoComplete="off"
+                  />
+                  <button className="search-submit" type="submit" aria-label="Startort suchen" disabled={searchingOrigin}>
+                    {searchingOrigin ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}
+                  </button>
+                  <button className="origin-location-button" type="button" onClick={requestOriginLocation} aria-label="Meinen Standort als Startpunkt verwenden" title="Meinen Standort als Startpunkt verwenden">
+                    {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={17} /> : <LocateFixed size={17} />}
+                  </button>
+                </form>
+              </div>
               <div className="destination-field">
-                {destination ? (
-                  <span className="field-label">NACH</span>
-                ) : (
-                  <label className="field-label" htmlFor="destination-search">NACH</label>
-                )}
-                {destination ? (
-                  <div className="selected-destination">
-                    <span>{destinationName}</span>
-                    <button type="button" onClick={clearDestination} aria-label="Ziel entfernen"><X size={16} /></button>
-                  </div>
-                ) : (
-                  <form className="search-form" onSubmit={searchPlaces}>
-                    <input
-                      id="destination-search"
-                      value={query}
-                      onChange={(event) => setQuery(event.target.value)}
-                      placeholder="Ziel suchen"
-                      autoComplete="off"
-                    />
-                    <button className="search-submit" type="submit" aria-label="Orte suchen" disabled={searching}>
-                      {searching ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}
-                    </button>
-                  </form>
-                )}
+                <label className="field-label" htmlFor="destination-search">NACH</label>
+                <form className="search-form" onSubmit={searchPlaces}>
+                  <input
+                    id="destination-search"
+                    value={query}
+                    onChange={(event) => editDestinationInput(event.target.value)}
+                    placeholder="Ziel suchen"
+                    autoComplete="off"
+                  />
+                  <button className="search-submit" type="submit" aria-label="Orte suchen" disabled={searching}>
+                    {searching ? <LoaderCircle className="spin" size={17} /> : <Search size={17} />}
+                  </button>
+                </form>
               </div>
             </div>
           </div>

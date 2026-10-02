@@ -1030,8 +1030,11 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
     display: block;
   }
 
-  .navigation-panel:not(.navigation-panel--active) .stop-rail,
   .navigation-panel:not(.navigation-panel--active) .field-label {
+    display: none;
+  }
+
+  .navigation-panel:not(.navigation-panel--active) .stop-rail > :not(.swap-stops-button) {
     display: none;
   }
 

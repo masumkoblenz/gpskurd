@@ -53,10 +53,15 @@ const workerScope = self as unknown as {
 
 let enginePromise: Promise<Engine> | undefined
 let engine: Engine | undefined
+const phonemizerState: { result?: PhonemizerResult } = {}
 let queue: Array<Extract<WorkerRequest, { type: 'speak' }>> = []
 let activeRequestIds = new Set<number>()
 let cancelledRequestIds = new Set<number>()
 let processing = false
+
+function getPhonemizerResult() {
+  return phonemizerState.result
+}
 
 function postToActiveRequests(message: WorkerReplyPayload) {
   for (const requestId of activeRequestIds) {
@@ -148,7 +153,14 @@ async function loadEngine(): Promise<Engine> {
           if (path.endsWith('.data')) return `${PIPER_WASM_BASE}.data`
           return path
         },
-        print: () => undefined,
+        print: (line: string) => {
+          try {
+            const result = JSON.parse(line) as PhonemizerResult
+            if (Array.isArray(result.phoneme_ids)) phonemizerState.result = result
+          } catch {
+            return
+          }
+        },
         printErr: () => undefined,
       })
 
@@ -170,30 +182,16 @@ async function loadEngine(): Promise<Engine> {
 }
 
 function phonemize(piper: PiperWasmModule, text: string, language: string): number[] {
-  let result: PhonemizerResult | undefined
-  const originalPrint = piper.print
+  phonemizerState.result = undefined
+  piper.callMain([
+    '-l', language,
+    '--input', JSON.stringify([{ text: text.trim() }]),
+    '--espeak_data', '/espeak-ng-data',
+  ])
 
-  piper.print = (line: string) => {
-    try {
-      const parsed = JSON.parse(line) as PhonemizerResult
-      if (Array.isArray(parsed.phoneme_ids)) result = parsed
-    } catch {
-      return
-    }
-  }
-
-  try {
-    piper.callMain([
-      '-l', language,
-      '--input', JSON.stringify([{ text: text.trim() }]),
-      '--espeak_data', '/espeak-ng-data',
-    ])
-  } finally {
-    piper.print = originalPrint
-  }
-
-  if (!result?.phoneme_ids.length) throw new Error('phonemize_failed')
-  return result.phoneme_ids
+  const phonemeIds = getPhonemizerResult()?.phoneme_ids
+  if (!phonemeIds?.length) throw new Error('phonemize_failed')
+  return phonemeIds
 }
 
 async function synthesize(request: Extract<WorkerRequest, { type: 'speak' }>) {
@@ -222,6 +220,9 @@ async function synthesize(request: Extract<WorkerRequest, { type: 'speak' }>) {
     if (cancelledRequestIds.has(request.requestId)) return
 
     const samples = new Float32Array(result.output.data as Float32Array)
+    if (!samples.length || !samples.some((sample) => Math.abs(sample) > 0.00001)) {
+      throw new Error('synthesis_returned_silence')
+    }
     workerScope.postMessage({
       type: 'audio',
       requestId: request.requestId,
