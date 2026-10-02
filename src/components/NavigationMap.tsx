@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
-import type { LatLngBounds, Map as LeafletMap, Marker, Polyline } from 'leaflet'
+import type { LatLngBounds, Map as LeafletMap, Marker, Polyline, TileLayer } from 'leaflet'
 import type { NavigationRoute, Point } from '@/lib/navigation'
+import { locationMarkup, routePinMarkup, trafficSignalLabel, trafficSignalMarkup, type TrafficSignalNode } from '@/lib/map-markers'
+
+import NavigationMap3D from './NavigationMap3D'
 
 export type ZoomRequest = { id: number; direction: -1 | 1 }
 
@@ -17,20 +20,14 @@ type NavigationMapProps = {
   drivingPerspectiveRequest: number
   zoomRequest: ZoomRequest
   onManualPan: () => void
+  threeDEnabled: boolean
+  onThreeDUnavailable: () => void
 }
 
 const fallbackCenter: [number, number] = [36.1911, 44.0092]
 const trafficSignalEndpoint = 'https://overpass-api.de/api/interpreter'
 const minimumTrafficSignalZoom = 14
 const minimumTrafficSignalRequestInterval = 60_000
-
-type TrafficSignalNode = {
-  type: string
-  id: number
-  lat: number
-  lon: number
-  tags?: Record<string, string>
-}
 
 async function fetchTrafficSignals(bounds: LatLngBounds, signal: AbortSignal) {
   const southWest = bounds.getSouthWest()
@@ -71,9 +68,17 @@ export function NavigationMap({
   drivingPerspectiveRequest,
   zoomRequest,
   onManualPan,
+  threeDEnabled,
+  onThreeDUnavailable,
 }: NavigationMapProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<LeafletMap | null>(null)
+  const basemapRef = useRef<TileLayer | null>(null)
+  const trafficViewportRef = useRef<(() => LatLngBounds) | null>(null)
+  const [trafficSignals, setTrafficSignals] = useState<TrafficSignalNode[]>([])
+  const [threeDMounted, setThreeDMounted] = useState(false)
+  const [threeDVisible, setThreeDVisible] = useState(false)
+  const [threeDError, setThreeDError] = useState(false)
   const hasTrafficSignalContextRef = useRef(Boolean(currentLocation || origin || destination || route))
   const [mapReady, setMapReady] = useState(false)
   const onManualPanRef = useRef(onManualPan)
@@ -114,10 +119,15 @@ export function NavigationMap({
       const map = leaflet.map(containerRef.current, {
         zoomControl: false,
         attributionControl: true,
-        minZoom: 8,
+        minZoom: 0,
         maxZoom: 19,
-        zoomSnap: 1,
+        zoomSnap: 0.25,
         zoomDelta: 1,
+        wheelPxPerZoomLevel: 120,
+        zoomAnimation: true,
+        fadeAnimation: true,
+        markerZoomAnimation: true,
+        bounceAtZoomLimits: false,
         touchZoom: true,
         rotate: true,
         touchRotate: true,
@@ -135,10 +145,13 @@ export function NavigationMap({
       map.on('dragstart', exitDrivingPerspective)
       map.on('rotatestart', exitDrivingPerspective)
       map.on('zoomstart', enableTrafficSignalRequests)
-      leaflet
-        .tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      basemapRef.current = leaflet
+        .tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
           className: 'navigation-basemap-tiles',
+          minZoom: 0,
           maxZoom: 19,
+          updateWhenZooming: false,
+          keepBuffer: 3,
           attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> Mitwirkende',
         })
         .addTo(map)
@@ -173,11 +186,12 @@ export function NavigationMap({
         if (disposed || mapRef.current !== map) return
         if (map.getZoom() < minimumTrafficSignalZoom) {
           trafficSignalLayer.clearLayers()
+          setTrafficSignals([])
           trafficSignalCoverage = null
           return
         }
 
-        const visibleBounds = map.getBounds()
+        const visibleBounds = trafficViewportRef.current?.() ?? map.getBounds()
         if (trafficSignalCoverage?.contains(visibleBounds)) return
         if (trafficSignalRequestInFlight) return
 
@@ -191,16 +205,18 @@ export function NavigationMap({
           if (disposed || mapRef.current !== map) return
           if (map.getZoom() < minimumTrafficSignalZoom) {
             trafficSignalLayer.clearLayers()
+            setTrafficSignals([])
             trafficSignalCoverage = null
             return
           }
-          if (!requestedBounds.contains(map.getBounds())) {
+          if (!requestedBounds.contains(trafficViewportRef.current?.() ?? map.getBounds())) {
             trafficSignalCoverage = null
             scheduleTrafficSignalRefresh()
             return
           }
 
           trafficSignalLayer.clearLayers()
+          setTrafficSignals(trafficSignals)
           const renderedSignalIds = new Set<number>()
           for (const trafficSignal of trafficSignals) {
             if (renderedSignalIds.has(trafficSignal.id)) continue
@@ -208,13 +224,13 @@ export function NavigationMap({
             leaflet.marker([trafficSignal.lat, trafficSignal.lon], {
               icon: leaflet.divIcon({
                 className: 'traffic-signal-marker',
-                html: '<span role="img" aria-label="Ampel"><svg viewBox="0 0 20 29" aria-hidden="true"><rect x="3" y="1" width="14" height="22" rx="5" fill="#293440" stroke="#fff" stroke-width="1.5"/><circle cx="10" cy="7" r="2.2" fill="#e45151"/><circle cx="10" cy="12" r="2.2" fill="#f0b84b"/><circle cx="10" cy="17" r="2.2" fill="#52a879"/><path d="M10 23v5" stroke="#293440" stroke-width="2" stroke-linecap="round"/></svg></span>',
-                iconSize: [20, 29],
-                iconAnchor: [10, 14],
+                html: trafficSignalMarkup,
+                iconSize: [18, 27],
+                iconAnchor: [9, 13],
               }),
               interactive: false,
               keyboard: false,
-              title: 'Ampel',
+              title: trafficSignalLabel,
             }).addTo(trafficSignalLayer)
           }
           trafficSignalCoverage = requestedBounds
@@ -242,8 +258,18 @@ export function NavigationMap({
       trafficSignalRequestController?.abort()
       mapRef.current?.remove()
       mapRef.current = null
+      basemapRef.current = null
     }
   }, [])
+
+  useEffect(() => {
+    const map = mapRef.current
+    const basemap = basemapRef.current
+    if (!map || !basemap) return
+    if (threeDEnabled) setThreeDError(false)
+    if (threeDVisible && threeDEnabled) basemap.remove()
+    else if (!map.hasLayer(basemap)) basemap.addTo(map)
+  }, [threeDEnabled, threeDVisible, mapReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -281,7 +307,7 @@ export function NavigationMap({
           .marker([point.lat, point.lon], {
             icon: leaflet.divIcon({
               className,
-              html: `<span role="img" aria-label="${label}"><svg viewBox="0 0 36 44" aria-hidden="true"><path d="M18 2C9.2 2 2 9.1 2 17.7c0 11.1 16 24.3 16 24.3s16-13.2 16-24.3C34 9.1 26.8 2 18 2Z"/><circle cx="18" cy="17" r="6"/></svg></span>`,
+              html: routePinMarkup(label),
               iconSize: [36, 44],
               iconAnchor: [18, 42],
             }),
@@ -338,7 +364,7 @@ export function NavigationMap({
         .marker([currentLocation.lat, currentLocation.lon], {
           icon: leaflet.divIcon({
             className: 'map-marker map-marker--location',
-            html: '<span role="img" aria-label="Ihr Standort"><i></i></span>',
+            html: locationMarkup,
             iconSize: [44, 44],
             iconAnchor: [22, 22],
           }),
@@ -404,7 +430,43 @@ export function NavigationMap({
 
   return (
     <div className="map-canvas">
-      <div className="map-inner" ref={containerRef} role="application" aria-label="OpenStreetMap-Karte" />
+      <div className={`map-inner map-2d-view${threeDVisible ? ' map-2d-view--hidden' : ''}`} ref={containerRef} role="application" aria-label="OpenStreetMap-Karte" aria-hidden={threeDVisible} inert={threeDVisible} />
+      {(threeDEnabled || threeDMounted) && mapReady && mapRef.current && (
+          <NavigationMap3D
+            leafletMap={mapRef.current}
+            enabled={threeDEnabled}
+            visible={threeDVisible}
+            origin={origin}
+            destination={destination}
+            currentLocation={currentLocation}
+            route={route}
+            trafficSignals={trafficSignals}
+            isNavigating={isNavigating}
+            drivingPerspectiveRequest={drivingPerspectiveRequest}
+            onManualPan={() => {
+              hasTrafficSignalContextRef.current = true
+              manualCameraChangeRef.current = true
+              onManualPanRef.current()
+            }}
+            onViewportReady={(getBounds) => { trafficViewportRef.current = getBounds }}
+            onVisibleChange={(visible) => {
+              setThreeDMounted(true)
+              setThreeDVisible(visible)
+            }}
+            onExited={() => {
+              setThreeDMounted(false)
+              setThreeDVisible(false)
+            }}
+            onUnavailable={() => {
+              setThreeDError(true)
+              setThreeDMounted(false)
+              setThreeDVisible(false)
+              onThreeDUnavailable()
+            }}
+          />
+      )}
+      {threeDEnabled && !threeDVisible && <div className="map-3d-status" role="status">Nexşeya 3D tê barkirin…</div>}
+      {threeDError && <div className="map-3d-status" role="alert">Nexşeya 3D ne berdest e. Nexşeya 2D çalak e.</div>}
     </div>
   )
 }

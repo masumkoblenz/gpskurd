@@ -4,6 +4,7 @@ import {
   ArrowUpDown,
   ArrowUpRight,
   BookOpen,
+  Box,
   CarFront,
   ChevronLeft,
   ChevronRight,
@@ -167,6 +168,7 @@ function NavigationPage() {
   const [followLocation, setFollowLocation] = useState(true)
   const [heading, setHeading] = useState<number | null>(null)
   const [headingUpEnabled, setHeadingUpEnabled] = useState(false)
+  const [threeDEnabled, setThreeDEnabled] = useState(false)
   const [zoomRequest, setZoomRequest] = useState<ZoomRequest>({ id: 0, direction: 1 })
   const [guidance, setGuidance] = useState<NavigationGuidance | null>(null)
   const [destinationReached, setDestinationReached] = useState(false)
@@ -1110,8 +1112,8 @@ function NavigationPage() {
     new Date(Date.now() + liveRemainingDuration * 1_000),
   )
 
-  const renderAppMenu = () => (
-    <div className="app-menu-anchor" ref={appMenuRef}>
+  const renderAppMenu = (navigationMenu = false) => (
+    <div className={`app-menu-anchor${navigationMenu ? ' app-menu-anchor--navigation' : ''}`} ref={appMenuRef}>
       <button
         className="app-menu-trigger"
         type="button"
@@ -1129,6 +1131,11 @@ function NavigationPage() {
         <div className="app-menu-popover" id="app-settings-menu" role="region" aria-label="Menü">
           {appMenuSection === 'main' ? (
             <div className="app-menu-items">
+              <button className="app-menu-item app-menu-toggle" type="button" role="switch" aria-checked={threeDEnabled} onClick={() => setThreeDEnabled((enabled) => !enabled)}>
+                <Box size={17} aria-hidden="true" />
+                <span>3D-Karte</span>
+                <span className="map-mode-switch" aria-hidden="true"><span /></span>
+              </button>
               <button className="app-menu-item" type="button" disabled={!route} onClick={() => setAppMenuSection('directions')}>
                 <BookOpen size={17} />
                 <span>Wegbeschreibung</span>
@@ -1175,6 +1182,8 @@ function NavigationPage() {
           setFollowLocation(false)
           setHeadingUpEnabled(false)
         }}
+        threeDEnabled={threeDEnabled}
+        onThreeDUnavailable={() => setThreeDEnabled(false)}
       />
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
@@ -1228,6 +1237,7 @@ function NavigationPage() {
       )}
 
       {routeError && <div className="map-status-banner map-status-banner--error" role="alert">{routeError}</div>}
+      {isNavigating && renderAppMenu(true)}
       {speechError && <div className="map-status-banner map-status-banner--error" role="alert">{speechError}</div>}
       {destinationReached && (
         <div className="destination-reached-banner" role="status">
