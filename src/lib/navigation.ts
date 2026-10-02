@@ -12,6 +12,7 @@ export type RouteStep = {
   maneuver: {
     type: string
     modifier?: string
+    exit?: number
     location: [number, number]
   }
   geometry: {
@@ -104,36 +105,79 @@ export function placeSubtitle(place: SearchResult) {
   return place.display_name.split(',').slice(1, 4).map((part) => part.trim()).filter(Boolean).join(', ')
 }
 
-function kurmanciTurn(step: RouteStep) {
-  const modifier = step.maneuver.modifier
-  if (step.maneuver.type === 'arrive') return 'Gihîştî cihê xwe.'
-  if (step.maneuver.type === 'depart') return 'Destpê bike.'
-  if (step.maneuver.type === 'roundabout' || step.maneuver.type === 'rotary') {
-    return 'Bike nav çemberê û derketina rast hilbijêre.'
-  }
-  if (step.maneuver.type === 'uturn') return 'Vegere û bizivire.'
-  if (modifier?.includes('left')) return 'li çepê bizivire.'
-  if (modifier?.includes('right')) return 'li rastê bizivire.'
-  if (modifier === 'uturn') return 'vegere.'
-  if (modifier === 'straight') return 'rast biçe.'
-  return 'li pêş biçe.'
+type KurmanciAnnouncementPhase = 'early' | 'repeat' | 'now'
+
+function kurmanciDirection(modifier?: string) {
+  if (modifier?.includes('left')) return 'li çepê bizivire'
+  if (modifier?.includes('right')) return 'li rastê bizivire'
+  if (modifier === 'uturn') return 'vegere'
+  return 'rast berdewam bike'
 }
 
-export function kurmanciInstructionFor(step: RouteStep, includeDistance = true, distanceOverride?: number) {
+function kurmanciExitOrdinal(exit: number) {
+  const ordinals = ['yekem', 'duyem', 'sêyem', 'çarêm', 'pêncem', 'şeşem', 'heftem', 'heştem', 'nehêm', 'dehem']
+  return ordinals[exit - 1] ?? `${exit}em`
+}
+
+function kurmanciTurn(step: RouteStep) {
+  const { type, modifier, exit } = step.maneuver
+  if (type === 'arrive') return 'heta cihê xwe berdewam bike'
+  if (type === 'depart') return 'rêwîtiyê dest pê bike'
+  if (type === 'roundabout' || type === 'rotary' || type === 'roundabout turn') {
+    return exit ? `bike nav çemberê û derketina ${kurmanciExitOrdinal(exit)} hilbijêre` : 'bike nav çemberê û derketina rast hilbijêre'
+  }
+  if (type === 'exit roundabout') return `ji çemberê derkeve${modifier?.includes('left') ? ' û li çepê bizivire' : modifier?.includes('right') ? ' û li rastê bizivire' : ''}`
+  if (type === 'fork') return `li dabeşbûna rêyan ${kurmanciDirection(modifier)}`
+  if (type === 'end of road') return `li dawiya rêyê ${kurmanciDirection(modifier)}`
+  if (type === 'on ramp') return `bike ser rêya derbasiyê${modifier?.includes('left') ? ' li çepê' : modifier?.includes('right') ? ' li rastê' : ''}`
+  if (type === 'off ramp') return `ji rêya bilez derkeve${modifier?.includes('left') ? ' li çepê' : modifier?.includes('right') ? ' li rastê' : ''}`
+  if (type === 'merge') return `tevli herikîna trafîkê bibe${modifier?.includes('left') ? ' li çepê' : modifier?.includes('right') ? ' li rastê' : ''}`
+  if (type === 'crossing') return `li derbasgehê ${kurmanciDirection(modifier)}`
+  if (type === 'intersection') return `li xaçerê ${kurmanciDirection(modifier)}`
+  if (type === 'traffic_signals') return `li ronahiya trafîkê ${kurmanciDirection(modifier)}`
+  if (type === 'uturn' || modifier === 'uturn') return 'vegere û bizivire'
+  if (modifier?.includes('left')) return 'li çepê bizivire'
+  if (modifier?.includes('right')) return 'li rastê bizivire'
+  if (modifier === 'straight') return 'rast berdewam bike'
+  return 'li pêş berdewam bike'
+}
+
+function kurmanciDistance(meters: number) {
+  const roundedDistance = meters < 100
+    ? Math.max(10, Math.round(meters / 10) * 10)
+    : Math.round(meters / 50) * 50
+  if (roundedDistance < 1_000) return `${roundedDistance} metreyan`
+  return `${(roundedDistance / 1_000).toFixed(1).replace('.', ',')} kilometroyan`
+}
+
+export function kurmanciInstructionFor(
+  step: RouteStep,
+  includeDistance = true,
+  distanceOverride?: number,
+  phase: KurmanciAnnouncementPhase = 'early',
+) {
+  const maneuver = step.maneuver.type
   const turn = kurmanciTurn(step)
-  if (step.maneuver.type === 'depart' || step.maneuver.type === 'arrive') return turn
+  if (maneuver === 'depart') return `${turn}.`
+  if (maneuver === 'arrive' && phase === 'now') return 'Heta cihê xwe berdewam bike.'
+
+  const streetName = step.name.trim()
+  const street = streetName ? ` li ser rêya ${streetName}` : ''
+  if (phase === 'now') return `Niha ${turn}${street}.`
+  if (!includeDistance) return `${turn}${street}.`
+
   const distanceMeters = distanceOverride ?? step.distance
-  if (!includeDistance || distanceMeters < 10) return turn
-  const distance =
-    distanceMeters < 1_000
-      ? `${Math.max(50, Math.round(distanceMeters / 50) * 50)} metreyan`
-      : `${(distanceMeters / 1_000).toFixed(1).replace('.', ',')} kilometroyan`
-  return `Di ${distance} de ${turn}`
+  const distance = kurmanciDistance(distanceMeters)
+  return `Di ${distance} de ${turn}${street}.`
+}
+
+export function kurmanciArrivalInstruction() {
+  return 'Gihîştî cihê xwe.'
 }
 
 function germanTurn(step: RouteStep) {
   const modifier = step.maneuver.modifier
-  if (step.maneuver.type === 'arrive') return 'Ziel erreicht.'
+  if (step.maneuver.type === 'arrive') return 'Fahren Sie bis zum Ziel weiter.'
   if (step.maneuver.type === 'depart') return 'Fahren Sie los.'
   if (step.maneuver.type === 'roundabout' || step.maneuver.type === 'rotary') {
     return 'Nehmen Sie die passende Ausfahrt im Kreisverkehr.'
