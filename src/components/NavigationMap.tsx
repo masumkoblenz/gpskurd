@@ -51,6 +51,7 @@ export function NavigationMap({
     drivingPerspectiveRequest: 0,
   })
   const lastZoomRequestRef = useRef(0)
+  const navigationZoomRef = useRef<number | null>(null)
   const layersRef = useRef<{
     origin: Marker | null
     destination: Marker | null
@@ -237,13 +238,17 @@ export function NavigationMap({
       if (headingUpEnabled && heading !== null) {
         map.setHeading(heading, { ease: 0.18, deadzone: 2 })
       }
-      map.flyTo([focus.lat, focus.lon], 17, { animate: true, duration: 0.65 })
+      map.flyTo([focus.lat, focus.lon], navigationZoomRef.current ?? Math.max(map.getZoom(), 17), { animate: true, duration: 0.65 })
     } else if (centerRequested && focus) {
       map.flyTo([focus.lat, focus.lon], undefined, { animate: true, duration: 0.65 })
     } else if (navigationStarted) {
-      if (focus) map.setView([focus.lat, focus.lon], Math.max(map.getZoom(), 17), { animate: true })
+      if (focus) {
+        navigationZoomRef.current = Math.max(map.getZoom(), 17)
+        map.setView([focus.lat, focus.lon], navigationZoomRef.current, { animate: true })
+      }
       else showRoute()
     } else if (navigationStopped && route) {
+      navigationZoomRef.current = null
       showRoute()
     } else if (!isNavigating && routeChanged && route) {
       showRoute()

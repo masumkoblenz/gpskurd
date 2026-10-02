@@ -21,6 +21,7 @@ import {
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { NavigationMap } from '@/components/NavigationMap'
 import {
+  createNavigationGuidance,
   distanceBetween,
   distanceAlongRouteToEnd,
   distanceToRoute,
@@ -28,14 +29,10 @@ import {
   formatClockDuration,
   formatDistance,
   formatDuration,
-  germanInstructionFor,
   getRoute,
-  kurmanciArrivalInstruction,
-  kurmanciInstructionFor,
-  navigationAnnouncementPhase,
-  navigationAnnouncementThresholds,
   placeSubtitle,
   placeTitle,
+  type NavigationGuidance,
   type NavigationRoute,
   type Point,
   type RouteStep,
@@ -48,28 +45,40 @@ export const Route = createFileRoute('/')({
   component: NavigationPage,
 })
 
-const navigationWelcomeMessages = [
-  'Rêwîtiya we xweş be.',
-  'Ez hêvî dikim rêwîtiya we xweş be.',
-  'Rêwîtiya we bi xêr be.',
-  'Em amade ne, em dest pê dikin.',
-  'Xwe biparêzin û rêwîtiya we xweş be.',
-  'Ez hêvî dikim hûn bi ewlehî bigihîjin cihê xwe.',
-  'Rêya we vekirî û xweş be.',
-  'Rêwîtiya we bi ewlehî be.',
-  'Her tişt amade ye, em dest pê dikin.',
-  'Em ê niha dest bi rêwîtiyê bikin.',
-  'Bi hêdî û bi ewlehî biçin.',
-  'Ez hêvî dikim hûn bi xêr bigihîjin.',
-  'Rêya we xweş û ewle be.',
-  'Xwedê rêya we biparêze.',
-  'Rêwîtiya we aram û xweş be.',
-  'Em ji bo rêwîtiyê amade ne.',
-  'Niha em dest bi rêwîtiyê dikin.',
-  'Bi rêya xwe ve bi ewlehî biçin.',
-  'Ez ji we re rêwîtiyek xweş dixwazim.',
-  'Hûn amade ne, em dest pê dikin.',
-] as const
+type SpeechLanguage = 'de' | 'ku'
+type SpeechCue = { id: number; text: string; stepIndex?: number; language: SpeechLanguage }
+
+function SpeechLanguagePicker({
+  language,
+  onChange,
+}: {
+  language: SpeechLanguage
+  onChange: (language: SpeechLanguage) => void
+}) {
+  return (
+    <div className="speech-language-picker">
+      <span className="speech-language-label">ANSAGESPRACHE</span>
+      <div className="speech-language-options" role="group" aria-label="Sprache der Navigationsansagen">
+        <button
+          className={`speech-language-button ${language === 'de' ? 'speech-language-button--active' : ''}`}
+          type="button"
+          onClick={() => onChange('de')}
+          aria-pressed={language === 'de'}
+        >
+          🇩🇪 Deutsch
+        </button>
+        <button
+          className={`speech-language-button ${language === 'ku' ? 'speech-language-button--active' : ''}`}
+          type="button"
+          onClick={() => onChange('ku')}
+          aria-pressed={language === 'ku'}
+        >
+          🟢 Kurmancî
+        </button>
+      </div>
+    </div>
+  )
+}
 
 function ManeuverArrow({ step }: { step: RouteStep }) {
   const maneuver = step.maneuver
@@ -129,10 +138,11 @@ function NavigationPage() {
   const [heading, setHeading] = useState<number | null>(null)
   const [headingUpEnabled, setHeadingUpEnabled] = useState(false)
   const [zoomRequest, setZoomRequest] = useState<ZoomRequest>({ id: 0, direction: 1 })
-  const [nextTurnDistance, setNextTurnDistance] = useState<number | null>(null)
+  const [guidance, setGuidance] = useState<NavigationGuidance | null>(null)
   const [destinationReached, setDestinationReached] = useState(false)
   const [voiceEnabled, setVoiceEnabled] = useState(true)
-  const [speechCue, setSpeechCue] = useState<{ id: number; text: string } | null>(null)
+  const [speechLanguage, setSpeechLanguage] = useState<SpeechLanguage>('de')
+  const [speechCue, setSpeechCue] = useState<SpeechCue | null>(null)
   const [speechError, setSpeechError] = useState('')
   const [mapCenterRequest, setMapCenterRequest] = useState(0)
   const [drivingPerspectiveRequest, setDrivingPerspectiveRequest] = useState(0)
@@ -155,8 +165,9 @@ function NavigationPage() {
   const speechRequestRef = useRef(0)
   const speechEventRef = useRef(0)
   const processedSpeechEventRef = useRef(0)
-  const speechQueueRef = useRef<Array<{ id: number; text: string }>>([])
+  const speechQueueRef = useRef<SpeechCue[]>([])
   const speechPlayingRef = useRef(false)
+  const speechUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null)
   const announcedManeuversRef = useRef(new Map<number, Set<'early' | 'repeat' | 'now'>>())
   const currentLocationRef = useRef<Point | null>(null)
   const originEditedRef = useRef(false)
@@ -165,17 +176,26 @@ function NavigationPage() {
   const lastLocationRenderRef = useRef(0)
   const headingUpRef = useRef(headingUpEnabled)
   const voiceEnabledRef = useRef(voiceEnabled)
-  const stopNavigationRef = useRef<() => void>(() => undefined)
+  const speechLanguageRef = useRef(speechLanguage)
+  const stopNavigationRef = useRef<(preserveSpeech?: boolean) => void>(() => undefined)
   headingUpRef.current = headingUpEnabled
   voiceEnabledRef.current = voiceEnabled
+  speechLanguageRef.current = speechLanguage
   routeRef.current = route
   destinationRef.current = destination
   stepIndexRef.current = stepIndex
 
-  const queueNavigationSpeech = (text: string) => {
+  const guidanceSpeechText = (currentGuidance: NavigationGuidance, language = speechLanguageRef.current) =>
+    language === 'de' ? currentGuidance.germanText : currentGuidance.kurmanciText
+
+  const queueNavigationSpeech = (
+    text: string,
+    stepIndex?: number,
+    language = speechLanguageRef.current,
+  ) => {
     if (!voiceEnabledRef.current || !text.trim()) return
-    const cue = { id: ++speechEventRef.current, text }
-    if (speechPlayingRef.current) speechQueueRef.current.push(cue)
+    const cue = { id: ++speechEventRef.current, text, stepIndex, language }
+    if (speechPlayingRef.current) speechQueueRef.current = [cue]
     else {
       speechPlayingRef.current = true
       setSpeechCue(cue)
@@ -186,6 +206,12 @@ function NavigationPage() {
     speechQueueRef.current = []
     speechPlayingRef.current = false
     setSpeechCue(null)
+    if (speechUtteranceRef.current) {
+      speechUtteranceRef.current.onend = null
+      speechUtteranceRef.current.onerror = null
+      window.speechSynthesis.cancel()
+      speechUtteranceRef.current = null
+    }
     if (audioSourceRef.current) {
       audioSourceRef.current.onended = null
       audioSourceRef.current.stop()
@@ -204,23 +230,19 @@ function NavigationPage() {
     setSpeechCue(null)
   }
 
-  const maneuverAnnouncement = (
-    maneuverIndex: number,
-    step: RouteStep,
-    distance: number,
-    phase: 'early' | 'repeat' | 'now',
-  ) => {
-    if (!voiceEnabledRef.current || maneuverIndex === 0 || step.maneuver.type === 'depart') return null
-    const announced = announcedManeuversRef.current.get(maneuverIndex) ?? new Set<'early' | 'repeat' | 'now'>()
-    if (announced.has(phase)) return null
-    announced.add(phase)
-    if (phase === 'repeat') announced.add('early')
-    if (phase === 'now') {
+  const maneuverAnnouncement = (currentGuidance: NavigationGuidance) => {
+    if (!voiceEnabledRef.current || currentGuidance.stepIndex === 0 || currentGuidance.step.maneuver.type === 'depart') return null
+    if (currentGuidance.distanceMeters === null || currentGuidance.phase === null) return null
+    const announced = announcedManeuversRef.current.get(currentGuidance.stepIndex) ?? new Set<'early' | 'repeat' | 'now'>()
+    if (announced.has(currentGuidance.phase)) return null
+    announced.add(currentGuidance.phase)
+    if (currentGuidance.phase === 'repeat') announced.add('early')
+    if (currentGuidance.phase === 'now') {
       announced.add('early')
       announced.add('repeat')
     }
-    announcedManeuversRef.current.set(maneuverIndex, announced)
-    return kurmanciInstructionFor(step, true, distance, phase)
+    announcedManeuversRef.current.set(currentGuidance.stepIndex, announced)
+    return guidanceSpeechText(currentGuidance)
   }
 
   const prepareAudio = async () => {
@@ -245,14 +267,13 @@ function NavigationPage() {
     const accuracy = coords.accuracy
     const previous = currentLocationRef.current
     const now = Date.now()
-    if (accuracy > 100 && previous) {
+    if (accuracy > 100) {
       setGpsStatus('error')
       setGpsMessage('Der GPS-Standort ist ungenau. Begeben Sie sich an einen Ort mit freier Sicht.')
       return null
     }
 
     const incoming = { lat: coords.latitude, lon: coords.longitude }
-    let point = incoming
     if (previous) {
       const movement = distanceBetween(previous, incoming)
       const elapsedSeconds = Math.max(0, now - lastLocationFixAtRef.current) / 1_000
@@ -261,24 +282,15 @@ function NavigationPage() {
         setGpsMessage('Das GPS-Signal ist schwach. Der Standort kann ungenau sein.')
         return null
       }
-      if (accuracy > 15 && movement < accuracy * 2) {
-        const smoothing = elapsedSeconds > 5
-          ? Math.max(0.55, Math.min(0.8, 18 / accuracy))
-          : Math.max(0.2, Math.min(0.75, 18 / accuracy))
-        point = {
-          lat: previous.lat + (incoming.lat - previous.lat) * smoothing,
-          lon: previous.lon + (incoming.lon - previous.lon) * smoothing,
-        }
-      }
     }
 
-    currentLocationRef.current = point
+    currentLocationRef.current = incoming
     lastLocationFixAtRef.current = now
     setGpsStatus('ready')
     setGpsMessage(accuracy > 35 ? 'Das GPS-Signal ist schwach. Der Standort kann ungenau sein.' : '')
     if (forceRender || !previous || now - lastLocationRenderRef.current >= 1_800) {
       lastLocationRenderRef.current = now
-      setCurrentLocation(point)
+      setCurrentLocation(incoming)
     }
 
     const course = coords.heading
@@ -295,7 +307,7 @@ function NavigationPage() {
       setHeading(null)
     }
 
-    return point
+    return incoming
   }
 
   const requestLocation = () => {
@@ -346,6 +358,7 @@ function NavigationPage() {
         setFollowLocation(true)
         setMapCenterRequest((request) => request + 1)
         setRoute(null)
+        setGuidance(null)
         setStepIndex(0)
         const selectedDestination = destinationRef.current
         if (!selectedDestination) return
@@ -435,13 +448,13 @@ function NavigationPage() {
     routeRequestRef.current += 1
     navigationSessionRef.current += 1
     setRoute(null)
+    setGuidance(null)
     setRouteError('')
     setRouting(false)
     setIsNavigating(false)
     clearNavigationSpeech()
     setStepIndex(0)
     setDestinationReached(false)
-    setNextTurnDistance(null)
   }
 
   const editOriginInput = (value: string) => {
@@ -478,6 +491,7 @@ function NavigationPage() {
     setOriginQuery(selectedOriginName)
     setOriginResults([])
     setRoute(null)
+    setGuidance(null)
     setRouting(false)
     setIsNavigating(false)
     clearNavigationSpeech()
@@ -524,6 +538,7 @@ function NavigationPage() {
     setResults([])
     setOriginResults([])
     setRoute(null)
+    setGuidance(null)
     setRouteError('')
     setDestinationReached(false)
     setIsNavigating(false)
@@ -557,6 +572,7 @@ function NavigationPage() {
     const requestId = ++routeRequestRef.current
     setTravelMode(mode)
     setRoute(null)
+    setGuidance(null)
     setRouteError('')
     setStepIndex(0)
     if (!origin || !destination) {
@@ -591,110 +607,94 @@ function NavigationPage() {
         const point = updateCurrentLocation(coords)
         if (!point) return
 
-        if (destination && distanceBetween(point, destination) <= Math.max(30, Math.min(coords.accuracy, 50))) {
-          setDestinationReached(true)
-          stopNavigationRef.current()
-          queueNavigationSpeech(kurmanciArrivalInstruction())
-          return
-        }
-
         const activeRoute = routeRef.current
         if (activeRoute?.steps.length) {
-          const announcementThresholds = navigationAnnouncementThresholds(travelMode)
-          const turnAnnouncementDistance = announcementThresholds.now
-          let currentIndex = Math.min(stepIndexRef.current, activeRoute.steps.length - 1)
-          let currentStep = activeRoute.steps[currentIndex]
-          let [maneuverLon, maneuverLat] = currentStep.maneuver.location
-          const getManeuverDistance = (index: number, maneuverPoint: Point) => {
-            const approachStep = activeRoute.steps[index - 1]
-            const routeDistance = approachStep
-              ? distanceAlongRouteToEnd(point, approachStep.geometry.coordinates)
-              : Number.POSITIVE_INFINITY
-            return Number.isFinite(routeDistance)
-              ? routeDistance
-              : distanceBetween(point, maneuverPoint)
-          }
-          let maneuverDistance = getManeuverDistance(currentIndex, { lat: maneuverLat, lon: maneuverLon })
-          const speechLines: string[] = []
-          const announcementPhase = (step: RouteStep, distance: number) => {
-            return navigationAnnouncementPhase(distance, travelMode, step.maneuver.type === 'arrive')
-          }
-          const addAnnouncement = (index: number, step: RouteStep, distance: number) => {
-            const phase = announcementPhase(step, distance)
-            if (!phase) return
-            const instruction = maneuverAnnouncement(index, step, distance, phase)
-            if (instruction) speechLines.push(instruction)
-          }
-
-          addAnnouncement(currentIndex, currentStep, maneuverDistance)
-          while (
-            currentIndex < activeRoute.steps.length - 1 &&
-            maneuverDistance < turnAnnouncementDistance
-          ) {
-            const immediateInstruction = maneuverAnnouncement(currentIndex, currentStep, maneuverDistance, 'now')
-            if (immediateInstruction) speechLines.push(immediateInstruction)
-            currentIndex += 1
-            currentStep = activeRoute.steps[currentIndex]
-            ;[maneuverLon, maneuverLat] = currentStep.maneuver.location
-            maneuverDistance = getManeuverDistance(currentIndex, { lat: maneuverLat, lon: maneuverLon })
-            addAnnouncement(currentIndex, currentStep, maneuverDistance)
-          }
-          if (currentIndex !== stepIndexRef.current) {
-            stepIndexRef.current = currentIndex
-            setStepIndex(currentIndex)
-          }
-
-          const preciseDistance = Math.max(0, Math.round(maneuverDistance))
-          setNextTurnDistance((previousDistance) => previousDistance === preciseDistance ? previousDistance : preciseDistance)
-          if (speechLines.length) queueNavigationSpeech(speechLines.join(' '))
-
+          const hasReachedDestination = Boolean(
+            destination && distanceBetween(point, destination) <= Math.max(30, Math.min(coords.accuracy, 50)),
+          )
           const offRouteDistance = distanceToRoute(point, activeRoute.geometry.coordinates)
           const now = Date.now()
+          const offRouteThreshold = Math.max(65, coords.accuracy * 1.5)
+          if (offRouteDistance <= offRouteThreshold || hasReachedDestination) {
+            const activeIndex = hasReachedDestination ? activeRoute.steps.length - 1 : stepIndexRef.current
+            const currentGuidance = createNavigationGuidance(
+              activeRoute,
+              point,
+              activeIndex,
+              coords.accuracy,
+            )
+            setGuidance(currentGuidance)
+            if (currentGuidance) {
+              const maneuverChanged = currentGuidance.stepIndex !== stepIndexRef.current
+              if (maneuverChanged) {
+                stepIndexRef.current = currentGuidance.stepIndex
+                setStepIndex(currentGuidance.stepIndex)
+              }
+              const pendingCue = speechQueueRef.current[0]
+              if (pendingCue?.stepIndex !== undefined) {
+                speechQueueRef.current = pendingCue.stepIndex === currentGuidance.stepIndex && currentGuidance.distanceMeters !== null
+                  ? [{ ...pendingCue, text: guidanceSpeechText(currentGuidance), language: speechLanguageRef.current }]
+                  : []
+              }
+              const instruction = maneuverAnnouncement(currentGuidance)
+              if (instruction) {
+                clearNavigationSpeech()
+                queueNavigationSpeech(instruction, currentGuidance.stepIndex)
+              }
+              else if (
+                maneuverChanged &&
+                currentGuidance.stepIndex > 0 &&
+                currentGuidance.distanceMeters !== null &&
+                currentGuidance.phase === null
+              ) {
+                clearNavigationSpeech()
+                announcedManeuversRef.current.set(currentGuidance.stepIndex, new Set(['early']))
+                queueNavigationSpeech(guidanceSpeechText(currentGuidance), currentGuidance.stepIndex)
+              }
+            }
+          } else {
+            setGuidance(null)
+            clearNavigationSpeech()
+          }
+
+          if (hasReachedDestination) {
+            setDestinationReached(true)
+            stopNavigationRef.current(true)
+            return
+          }
+
           if (
             destination &&
-            offRouteDistance > Math.max(65, coords.accuracy * 1.5) &&
+            offRouteDistance > offRouteThreshold &&
             now - lastRerouteRef.current > 12_000 &&
             !reroutingRef.current
           ) {
             lastRerouteRef.current = now
             reroutingRef.current = true
             clearNavigationSpeech()
-            queueNavigationSpeech('Rê ji nû ve tê hesabkirin.')
             const requestId = ++routeRequestRef.current
             setRouting(true)
             setRouteError('')
             void getRoute(point, destination, travelMode)
               .then((newRoute) => {
                 if (routeRequestRef.current === requestId) {
+                  const newGuidance = createNavigationGuidance(newRoute, point, 1, coords.accuracy)
+                  routeRef.current = newRoute
                   setRoute(newRoute)
-                  const nextStep = Math.min(1, newRoute.steps.length - 1)
+                  setGuidance(newGuidance)
+                  const nextStep = newGuidance?.stepIndex ?? 0
                   stepIndexRef.current = nextStep
                   setStepIndex(nextStep)
                   announcedManeuversRef.current.clear()
-                  const nextManeuver = newRoute.steps[nextStep]
-                  const departureStep = newRoute.steps[0]
-                  const distanceToNextManeuver = departureStep?.maneuver.type === 'depart'
-                    ? departureStep.distance
-                    : nextManeuver.distance
-                  setNextTurnDistance(distanceToNextManeuver)
-                  const phase = navigationAnnouncementPhase(
-                    distanceToNextManeuver,
-                    travelMode,
-                    nextManeuver.maneuver.type === 'arrive',
-                  ) ?? 'early'
-                  if (voiceEnabledRef.current && nextStep > 0 && nextManeuver.maneuver.type !== 'depart') {
-                    const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
-                    if (phase === 'repeat' || phase === 'now') announcedPhases.add('repeat')
-                    if (phase === 'now') announcedPhases.add('now')
-                    announcedManeuversRef.current.set(nextStep, announcedPhases)
+                  if (newGuidance && nextStep > 0 && newGuidance.distanceMeters !== null) {
+                    announcedManeuversRef.current.set(nextStep, new Set(['early', 'repeat', 'now']))
+                    queueNavigationSpeech(guidanceSpeechText(newGuidance), nextStep)
                   }
-                  queueNavigationSpeech(`Rê ji nû ve hate hesabkirin. ${kurmanciInstructionFor(nextManeuver, true, distanceToNextManeuver, phase)}`)
                 }
               })
               .catch(() => {
                 if (routeRequestRef.current === requestId) {
                   setRouteError('Neue Route konnte nicht berechnet werden. Die Navigation wird auf der bisherigen Route fortgesetzt.')
-                  queueNavigationSpeech('Rê ji nû ve nehat hesabkirin. Bi rêya heyî berdewam bike.')
                 }
               })
               .finally(() => {
@@ -714,24 +714,64 @@ function NavigationPage() {
     return () => navigator.geolocation.clearWatch(watchId)
   }, [destination, isNavigating, travelMode, voiceEnabled])
 
-  const activeStep: RouteStep | undefined = route?.steps[Math.min(stepIndex, (route?.steps.length ?? 1) - 1)]
-  const activeInstructionDistance = nextTurnDistance ?? activeStep?.distance
-  const activeInstructionPhase = activeStep && activeInstructionDistance !== undefined
-    ? navigationAnnouncementPhase(activeInstructionDistance, travelMode, activeStep.maneuver.type === 'arrive') ?? 'early'
-    : 'early'
+  const activeGuidance = guidance?.route === route ? guidance : null
+  const activeStep = activeGuidance?.step
 
   useEffect(() => {
     if (!speechCue || !voiceEnabled || speechCue.id === processedSpeechEventRef.current) return
+    processedSpeechEventRef.current = speechCue.id
+    const requestId = ++speechRequestRef.current
+    let requestCancelled = false
+    let requestFinished = false
+
+    if (speechCue.language === 'de') {
+      if (typeof window.speechSynthesis === 'undefined') {
+        setSpeechError('Die deutsche Sprachausgabe wird auf diesem Gerät nicht unterstützt.')
+        finishNavigationSpeech()
+        return
+      }
+
+      const synthesis = window.speechSynthesis
+      const utterance = new SpeechSynthesisUtterance(speechCue.text)
+      utterance.lang = 'de-DE'
+      const germanVoice = synthesis.getVoices().find((voice) => voice.lang.toLowerCase().startsWith('de'))
+      if (germanVoice) utterance.voice = germanVoice
+      utterance.onend = () => {
+        if (requestCancelled) return
+        requestFinished = true
+        speechUtteranceRef.current = null
+        setSpeechError('')
+        finishNavigationSpeech()
+      }
+      utterance.onerror = (event) => {
+        if (requestCancelled) return
+        requestFinished = true
+        speechUtteranceRef.current = null
+        if (event.error !== 'canceled' && event.error !== 'interrupted') {
+          setSpeechError('Die deutsche Sprachausgabe konnte nicht abgespielt werden.')
+        }
+        finishNavigationSpeech()
+      }
+      speechUtteranceRef.current = utterance
+      synthesis.speak(utterance)
+
+      return () => {
+        requestCancelled = true
+        utterance.onend = null
+        utterance.onerror = null
+        if (speechUtteranceRef.current === utterance) {
+          speechUtteranceRef.current = null
+          if (!requestFinished) synthesis.cancel()
+        }
+      }
+    }
+
     const audioContext = audioContextRef.current
     if (!audioContext) {
       finishNavigationSpeech()
       return
     }
 
-    processedSpeechEventRef.current = speechCue.id
-    const requestId = ++speechRequestRef.current
-    let requestCancelled = false
-    let requestFinished = false
     let requestSynthesized = false
     const worker = ttsWorkerRef.current ?? new Worker(
       new URL('../workers/kurmanci-tts.worker.ts', import.meta.url),
@@ -762,7 +802,7 @@ function NavigationPage() {
 
       if (message.type === 'error') {
         requestFinished = true
-        setSpeechError('Dengê rêberiyê nayê çêkirin. Dîsa biceribîne.')
+        setSpeechError('Die Kurmancî-Sprachausgabe konnte nicht erstellt werden. Bitte erneut versuchen.')
         finishNavigationSpeech()
         return
       }
@@ -771,7 +811,7 @@ function NavigationPage() {
       requestSynthesized = true
       if (!message.samples || !message.sampleRate) {
         requestFinished = true
-        setSpeechError('Dengê rêberiyê nayê çêkirin. Dîsa biceribîne.')
+        setSpeechError('Die Kurmancî-Sprachausgabe konnte nicht erstellt werden. Bitte erneut versuchen.')
         finishNavigationSpeech()
         return
       }
@@ -802,7 +842,7 @@ function NavigationPage() {
       })().catch(() => {
         if (!requestCancelled) {
           requestFinished = true
-          setSpeechError('Dengê rêberiyê nayê çêkirin. Dîsa biceribîne.')
+          setSpeechError('Die Kurmancî-Sprachausgabe konnte nicht erstellt werden. Bitte erneut versuchen.')
           finishNavigationSpeech()
         }
       })
@@ -811,7 +851,7 @@ function NavigationPage() {
     const handleWorkerError = () => {
       if (requestCancelled) return
       requestFinished = true
-      setSpeechError('Dengê rêberiyê nayê çêkirin. Dîsa biceribîne.')
+      setSpeechError('Die Kurmancî-Sprachausgabe konnte nicht erstellt werden. Bitte erneut versuchen.')
       finishNavigationSpeech()
     }
 
@@ -841,44 +881,31 @@ function NavigationPage() {
     if (!route || route.mode !== travelMode) return
     const navigationSessionId = ++navigationSessionRef.current
     lastLocationRenderRef.current = 0
-    lastRerouteRef.current = Date.now()
+    lastRerouteRef.current = 0
     const nextStep = Math.min(1, route.steps.length - 1)
-    stepIndexRef.current = nextStep
-    setStepIndex(nextStep)
     announcedManeuversRef.current.clear()
-    const openingLines: string[] = []
-    const departureStep = route.steps[0]
-    if (departureStep?.maneuver.type === 'depart') {
-      openingLines.push(kurmanciInstructionFor(departureStep, false))
+    const startPoint = currentLocationRef.current
+    const locationIsOnRoute = startPoint && distanceToRoute(startPoint, route.geometry.coordinates) <= 65
+    const initialGuidance = startPoint && locationIsOnRoute
+      ? createNavigationGuidance(route, startPoint, nextStep)
+      : null
+    const activeStepIndex = initialGuidance?.stepIndex ?? nextStep
+    stepIndexRef.current = activeStepIndex
+    setStepIndex(activeStepIndex)
+    setGuidance(initialGuidance)
+    if (voiceEnabled && initialGuidance && initialGuidance.distanceMeters !== null) {
+      const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
+      if (initialGuidance.phase === 'repeat' || initialGuidance.phase === 'now') announcedPhases.add('repeat')
+      if (initialGuidance.phase === 'now') announcedPhases.add('now')
+      announcedManeuversRef.current.set(activeStepIndex, announcedPhases)
     }
-    const nextManeuver = route.steps[nextStep]
-    if (nextStep > 0 && nextManeuver) {
-      const distanceToManeuver = departureStep?.maneuver.type === 'depart'
-        ? departureStep.distance
-        : nextManeuver.distance
-      const phase = navigationAnnouncementPhase(
-        distanceToManeuver,
-        travelMode,
-        nextManeuver.maneuver.type === 'arrive',
-      ) ?? 'early'
-      setNextTurnDistance(distanceToManeuver)
-      openingLines.push(kurmanciInstructionFor(nextManeuver, true, distanceToManeuver, phase))
-      if (voiceEnabled) {
-        const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
-        if (phase === 'repeat' || phase === 'now') announcedPhases.add('repeat')
-        if (phase === 'now') announcedPhases.add('now')
-        announcedManeuversRef.current.set(nextStep, announcedPhases)
-      }
-    } else {
-      setNextTurnDistance(null)
-    }
-    const welcomeMessage = navigationWelcomeMessages[Math.floor(Math.random() * navigationWelcomeMessages.length)]
     clearNavigationSpeech()
     if (voiceEnabled) {
       void prepareAudio().then((audioContext) => {
         if (!audioContext || navigationSessionRef.current !== navigationSessionId || !voiceEnabledRef.current) return
-        queueNavigationSpeech(welcomeMessage)
-        queueNavigationSpeech(openingLines.join(' '))
+        if (initialGuidance?.distanceMeters !== null && initialGuidance) {
+          queueNavigationSpeech(guidanceSpeechText(initialGuidance), activeStepIndex)
+        }
       })
     }
     setDestinationReached(false)
@@ -888,7 +915,7 @@ function NavigationPage() {
     setIsNavigating(true)
   }
 
-  const stopNavigation = () => {
+  const stopNavigation = (preserveSpeech = false) => {
     navigationSessionRef.current += 1
     setIsNavigating(false)
     setFollowLocation(false)
@@ -897,7 +924,7 @@ function NavigationPage() {
     routeRequestRef.current += 1
     reroutingRef.current = false
     announcedManeuversRef.current.clear()
-    clearNavigationSpeech()
+    if (!preserveSpeech) clearNavigationSpeech()
   }
   stopNavigationRef.current = stopNavigation
 
@@ -914,7 +941,6 @@ function NavigationPage() {
   const returnToDrivingPerspective = () => {
     setFollowLocation(true)
     setHeadingUpEnabled(true)
-    setHeading(null)
     setDrivingPerspectiveRequest((request) => request + 1)
     requestLocation()
   }
@@ -937,6 +963,25 @@ function NavigationPage() {
     setVoiceEnabled(nextVoiceEnabled)
   }
 
+  const changeSpeechLanguage = (language: SpeechLanguage) => {
+    if (language === speechLanguageRef.current) return
+    speechLanguageRef.current = language
+    setSpeechLanguage(language)
+    clearNavigationSpeech()
+
+    if (!voiceEnabledRef.current || !isNavigating || !activeGuidance || activeGuidance.distanceMeters === null) return
+
+    const speakCurrentGuidance = () => {
+      if (!voiceEnabledRef.current || speechLanguageRef.current !== language) return
+      queueNavigationSpeech(guidanceSpeechText(activeGuidance, language), activeGuidance.stepIndex, language)
+    }
+
+    if (language === 'de') speakCurrentGuidance()
+    else void prepareAudio().then((audioContext) => {
+      if (audioContext) speakCurrentGuidance()
+    })
+  }
+
   const clearDestination = () => {
     routeRequestRef.current += 1
     navigationSessionRef.current += 1
@@ -944,12 +989,12 @@ function NavigationPage() {
     setDestinationName('')
     setQuery('')
     setRoute(null)
+    setGuidance(null)
     setRouteError('')
     setRouting(false)
     setIsNavigating(false)
     clearNavigationSpeech()
     setDestinationReached(false)
-    setNextTurnDistance(null)
     setResults([])
     setOriginResults([])
   }
@@ -974,6 +1019,7 @@ function NavigationPage() {
     setOriginQuery(nextOriginText)
     setOriginResults([])
     setRoute(null)
+    setGuidance(null)
     setRouteError('')
     setRouting(false)
     setIsNavigating(false)
@@ -984,7 +1030,6 @@ function NavigationPage() {
     setQuery(nextDestinationText)
     setResults([])
     setDestinationReached(false)
-    setNextTurnDistance(null)
     if (!previousOrigin || !previousDestination) return
 
     setRouting(true)
@@ -1002,14 +1047,14 @@ function NavigationPage() {
 
   const remainingDistance = route?.steps.slice(stepIndex).reduce((total, step) => total + step.distance, 0) ?? 0
   const remainingDuration = route?.steps.slice(stepIndex).reduce((total, step) => total + step.duration, 0) ?? 0
-  const activeNavigationStep = route?.steps[stepIndex]
-  const distanceAfterTurn = route?.steps.slice(stepIndex + 1).reduce((total, step) => total + step.distance, 0) ?? 0
-  const durationAfterTurn = route?.steps.slice(stepIndex + 1).reduce((total, step) => total + step.duration, 0) ?? 0
-  const liveRemainingDistance = isNavigating && nextTurnDistance !== null
-    ? nextTurnDistance + distanceAfterTurn
+  const projectedRemainingDistance = route && currentLocation
+    ? distanceAlongRouteToEnd(currentLocation, route.geometry.coordinates)
+    : Number.NaN
+  const liveRemainingDistance = isNavigating && Number.isFinite(projectedRemainingDistance)
+    ? projectedRemainingDistance
     : remainingDistance
-  const liveRemainingDuration = isNavigating && nextTurnDistance !== null && activeNavigationStep?.distance
-    ? Math.min(1, nextTurnDistance / activeNavigationStep.distance) * activeNavigationStep.duration + durationAfterTurn
+  const liveRemainingDuration = isNavigating && route && Number.isFinite(projectedRemainingDistance) && route.distance > 0
+    ? route.duration * projectedRemainingDistance / route.distance
     : remainingDuration
   const arrivalTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(
     new Date(Date.now() + liveRemainingDuration * 1_000),
@@ -1072,6 +1117,17 @@ function NavigationPage() {
           {gpsStatus === 'loading' ? <LoaderCircle className="spin" size={19} /> : <LocateFixed size={19} />}
         </button>
       </div>
+      {isNavigating && (
+        <button
+          className="map-control-button driving-perspective-reset"
+          type="button"
+          onClick={returnToDrivingPerspective}
+          aria-label="Zur ursprünglichen Fahrperspektive zurückkehren"
+          title="Zur ursprünglichen Fahrperspektive zurückkehren"
+        >
+          <Navigation size={19} />
+        </button>
+      )}
 
       {gpsMessage && <div className={`map-status-banner ${gpsStatus === 'error' ? 'map-status-banner--centered' : ''}`} role="status">{gpsMessage}</div>}
       {routeError && <div className="map-status-banner map-status-banner--error" role="alert">{routeError}</div>}
@@ -1093,14 +1149,19 @@ function NavigationPage() {
           <div className="header-state"><span className="state-dot" /> LIVE</div>
         </header>
 
-        {isNavigating && activeStep && !activeSearch ? (
+        {(isNavigating || destinationReached) && activeGuidance && activeStep && !activeSearch ? (
           <div className="turn-card">
             <span className="turn-card-arrow"><ManeuverArrow step={activeStep} /></span>
             <div className="turn-card-copy">
               <div className="turn-eyebrow"><span className="turn-indicator" /> NÄCHSTE ANWEISUNG</div>
-              <h1>{germanInstructionFor(activeStep, true, activeInstructionDistance, activeInstructionPhase)}</h1>
-              {activeStep.name && <p>{activeStep.name}</p>}
+              <h1>{activeGuidance.germanText}</h1>
             </div>
+          </div>
+        ) : (isNavigating || destinationReached) && !activeSearch ? (
+          <div className="panel-intro">
+            <div className="eyebrow"><Compass size={14} /> NAVIGATION</div>
+            <h1>{destinationReached ? 'Ziel erreicht' : routing ? 'Route wird neu berechnet…' : 'GPS-Position wird geprüft…'}</h1>
+            {!destinationReached && <p>Die nächste Anweisung erscheint, sobald die Position sicher auf der Route liegt.</p>}
           </div>
         ) : !activeSearch ? (
           <div className="panel-intro">
@@ -1254,6 +1315,7 @@ function NavigationPage() {
 
         {isNavigating && route && !activeSearch && (
           <div className="navigation-drawer">
+            <SpeechLanguagePicker language={speechLanguage} onChange={changeSpeechLanguage} />
             <div className="navigation-footer">
               <div className="navigation-stats" aria-label="Routeninformationen">
                 <div className="navigation-stat"><span>REST</span><strong className="estimate-distance">{formatDistance(liveRemainingDistance)}</strong></div>
@@ -1261,7 +1323,7 @@ function NavigationPage() {
               </div>
               <div className="navigation-arrival-stop">
                 <div className="navigation-stat"><span>ANKUNFT</span><strong>{arrivalTime}</strong></div>
-                <button type="button" className="stop-button" onClick={stopNavigation} aria-label="Navigation beenden" title="Navigation beenden"><X size={20} strokeWidth={2.5} /></button>
+                <button type="button" className="stop-button" onClick={() => stopNavigation()} aria-label="Navigation beenden" title="Navigation beenden"><X size={20} strokeWidth={2.5} /></button>
               </div>
             </div>
           </div>
