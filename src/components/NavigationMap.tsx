@@ -14,6 +14,7 @@ type NavigationMapProps = {
   headingUpEnabled: boolean
   heading: number | null
   centerRequest: number
+  drivingPerspectiveRequest: number
   zoomRequest: ZoomRequest
   onManualPan: () => void
 }
@@ -30,6 +31,7 @@ export function NavigationMap({
   headingUpEnabled,
   heading,
   centerRequest,
+  drivingPerspectiveRequest,
   zoomRequest,
   onManualPan,
 }: NavigationMapProps) {
@@ -46,6 +48,7 @@ export function NavigationMap({
     isNavigating: false,
     followLocation: true,
     centerRequest: 0,
+    drivingPerspectiveRequest: 0,
   })
   const lastZoomRequestRef = useRef(0)
   const layersRef = useRef<{
@@ -214,6 +217,7 @@ export function NavigationMap({
     const navigationStarted = isNavigating && !previous.isNavigating
     const navigationStopped = !isNavigating && previous.isNavigating
     const centerRequested = centerRequest !== previous.centerRequest
+    const drivingPerspectiveRequested = drivingPerspectiveRequest !== previous.drivingPerspectiveRequest
     const routeChanged = route !== previous.route
     const locationChanged = currentLocation !== previous.currentLocation
     const originChanged = origin !== previous.origin
@@ -228,10 +232,16 @@ export function NavigationMap({
       return true
     }
 
-    if (centerRequested && focus) {
+    if (drivingPerspectiveRequested && focus) {
+      map.setBearing(0)
+      if (headingUpEnabled && heading !== null) {
+        map.setHeading(heading, { ease: 0.18, deadzone: 2 })
+      }
+      map.flyTo([focus.lat, focus.lon], 17, { animate: true, duration: 0.65 })
+    } else if (centerRequested && focus) {
       map.flyTo([focus.lat, focus.lon], undefined, { animate: true, duration: 0.65 })
     } else if (navigationStarted) {
-      if (focus) map.setView([focus.lat, focus.lon], Math.max(map.getZoom(), 16), { animate: true })
+      if (focus) map.setView([focus.lat, focus.lon], Math.max(map.getZoom(), 17), { animate: true })
       else showRoute()
     } else if (navigationStopped && route) {
       showRoute()
@@ -247,8 +257,8 @@ export function NavigationMap({
       map.setView([focus.lat, focus.lon], 15)
     }
 
-    cameraStateRef.current = { origin, destination, currentLocation, route, isNavigating, followLocation, centerRequest }
-  }, [origin, destination, currentLocation, route, isNavigating, followLocation, centerRequest, mapReady])
+    cameraStateRef.current = { origin, destination, currentLocation, route, isNavigating, followLocation, centerRequest, drivingPerspectiveRequest }
+  }, [origin, destination, currentLocation, route, isNavigating, followLocation, heading, headingUpEnabled, centerRequest, drivingPerspectiveRequest, mapReady])
 
   return (
     <div className="map-canvas">

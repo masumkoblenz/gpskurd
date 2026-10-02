@@ -105,7 +105,25 @@ export function placeSubtitle(place: SearchResult) {
   return place.display_name.split(',').slice(1, 4).map((part) => part.trim()).filter(Boolean).join(', ')
 }
 
-type KurmanciAnnouncementPhase = 'early' | 'repeat' | 'now'
+export type NavigationAnnouncementPhase = 'early' | 'repeat' | 'now'
+
+export function navigationAnnouncementThresholds(mode: TravelMode) {
+  return mode === 'foot'
+    ? { early: 150, repeat: 30, now: 10 }
+    : { early: 800, repeat: 170, now: 35 }
+}
+
+export function navigationAnnouncementPhase(
+  distance: number,
+  mode: TravelMode,
+  isArrival = false,
+): NavigationAnnouncementPhase | null {
+  const thresholds = navigationAnnouncementThresholds(mode)
+  if (!isArrival && distance <= thresholds.now) return 'now'
+  if (distance <= thresholds.repeat) return 'repeat'
+  if (distance <= thresholds.early) return 'early'
+  return null
+}
 
 function kurmanciDirection(modifier?: string) {
   if (modifier?.includes('left')) return 'li çepê bizivire'
@@ -154,7 +172,7 @@ export function kurmanciInstructionFor(
   step: RouteStep,
   includeDistance = true,
   distanceOverride?: number,
-  phase: KurmanciAnnouncementPhase = 'early',
+  phase: NavigationAnnouncementPhase = 'early',
 ) {
   const maneuver = step.maneuver.type
   const turn = kurmanciTurn(step)
@@ -179,9 +197,35 @@ function germanTurn(step: RouteStep) {
   const modifier = step.maneuver.modifier
   if (step.maneuver.type === 'arrive') return 'Fahren Sie bis zum Ziel weiter.'
   if (step.maneuver.type === 'depart') return 'Fahren Sie los.'
-  if (step.maneuver.type === 'roundabout' || step.maneuver.type === 'rotary') {
-    return 'Nehmen Sie die passende Ausfahrt im Kreisverkehr.'
+  if (step.maneuver.type === 'roundabout' || step.maneuver.type === 'rotary' || step.maneuver.type === 'roundabout turn') {
+    return step.maneuver.exit
+      ? `Nehmen Sie die ${step.maneuver.exit}. Ausfahrt im Kreisverkehr.`
+      : 'Nehmen Sie die passende Ausfahrt im Kreisverkehr.'
   }
+  if (step.maneuver.type === 'exit roundabout') {
+    const direction = modifier?.includes('left') ? ' und biegen Sie nach links ab' : modifier?.includes('right') ? ' und biegen Sie nach rechts ab' : ''
+    return `Verlassen Sie den Kreisverkehr${direction}.`
+  }
+  if (step.maneuver.type === 'fork') return `Halten Sie sich an der Gabelung ${modifier?.includes('left') ? 'links' : modifier?.includes('right') ? 'rechts' : 'geradeaus'}.`
+  if (step.maneuver.type === 'end of road') return `Biegen Sie am Ende der Straße ${modifier?.includes('left') ? 'links' : modifier?.includes('right') ? 'rechts' : 'geradeaus'} ab.`
+  if (step.maneuver.type === 'on ramp') {
+    const direction = modifier?.includes('left') ? ' nach links' : modifier?.includes('right') ? ' nach rechts' : ''
+    return `Fahren Sie auf die Auffahrt${direction}.`
+  }
+  if (step.maneuver.type === 'off ramp') {
+    const direction = modifier?.includes('left') ? ' nach links' : modifier?.includes('right') ? ' nach rechts' : ''
+    return `Nehmen Sie die Ausfahrt${direction}.`
+  }
+  if (step.maneuver.type === 'merge') {
+    const direction = modifier?.includes('left') ? ' links' : modifier?.includes('right') ? ' rechts' : ''
+    return `Fädeln Sie sich${direction} in den Verkehr ein.`
+  }
+  if (step.maneuver.type === 'crossing') {
+    const direction = modifier?.includes('left') ? ' nach links' : modifier?.includes('right') ? ' nach rechts' : ' geradeaus'
+    return `Überqueren Sie die Kreuzung und fahren Sie${direction}.`
+  }
+  if (step.maneuver.type === 'intersection') return `Fahren Sie an der Kreuzung ${modifier?.includes('left') ? 'nach links' : modifier?.includes('right') ? 'nach rechts' : 'geradeaus'}.`
+  if (step.maneuver.type === 'traffic_signals') return `Fahren Sie an der Ampel ${modifier?.includes('left') ? 'nach links' : modifier?.includes('right') ? 'nach rechts' : 'geradeaus'}.`
   if (step.maneuver.type === 'uturn' || modifier === 'uturn') return 'Wenden Sie.'
   if (modifier?.includes('left')) return 'links abbiegen.'
   if (modifier?.includes('right')) return 'rechts abbiegen.'
@@ -189,9 +233,15 @@ function germanTurn(step: RouteStep) {
   return 'weiterfahren.'
 }
 
-export function germanInstructionFor(step: RouteStep, includeDistance = true, distanceOverride?: number) {
+export function germanInstructionFor(
+  step: RouteStep,
+  includeDistance = true,
+  distanceOverride?: number,
+  phase: NavigationAnnouncementPhase = 'early',
+) {
   const turn = germanTurn(step)
   if (step.maneuver.type === 'depart' || step.maneuver.type === 'arrive') return turn
+  if (phase === 'now') return `Jetzt ${turn.charAt(0).toLocaleLowerCase('de-DE')}${turn.slice(1)}`
   const distanceMeters = distanceOverride ?? step.distance
   if (!includeDistance || distanceMeters < 10) {
     return `${turn.charAt(0).toLocaleUpperCase('de-DE')}${turn.slice(1)}`
