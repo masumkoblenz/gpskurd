@@ -149,6 +149,8 @@ function ManeuverArrow({ step }: { step: RouteStep }) {
 function NavigationPage() {
   const [origin, setOrigin] = useState<Point | null>(null)
   const [originName, setOriginName] = useState('')
+  const [gpsAccuracy, setGpsAccuracy] = useState<number | null>(null)
+  const [speed, setSpeed] = useState<number | null>(null)
   const [currentLocation, setCurrentLocation] = useState<Point | null>(null)
   const [destination, setDestination] = useState<Point | null>(null)
   const [destinationName, setDestinationName] = useState('')
@@ -344,6 +346,8 @@ function NavigationPage() {
     if (forceRender || !previous || now - lastLocationRenderRef.current >= 1_800) {
       lastLocationRenderRef.current = now
       setCurrentLocation(incoming)
+      setGpsAccuracy(Number.isFinite(accuracy) ? accuracy : null)
+      setSpeed(coords.speed !== null && Number.isFinite(coords.speed) ? Math.max(0, coords.speed) : null)
     }
 
     const course = coords.heading
@@ -354,7 +358,7 @@ function NavigationPage() {
       setHeading((oldHeading) => {
         if (oldHeading === null) return course
         const difference = Math.abs(((course - oldHeading + 540) % 360) - 180)
-        return difference > 12 ? course : oldHeading
+        return difference > 3 ? course : oldHeading
       })
     } else if (headingUpRef.current || forceHeading) {
       setHeading(null)
@@ -972,6 +976,7 @@ function NavigationPage() {
     setRouteError('')
     setFollowLocation(true)
     setHeadingUpEnabled(true)
+    if (travelMode === 'driving') setMapPerspective('driving')
     setIsNavigating(true)
   }
 
@@ -999,6 +1004,7 @@ function NavigationPage() {
   }
 
   const returnToDrivingPerspective = () => {
+    if (isNavigating && travelMode === 'driving') setMapPerspective('driving')
     setFollowLocation(true)
     setHeadingUpEnabled(true)
     requestLocation(() => setDrivingPerspectiveRequest((request) => request + 1))
@@ -1178,6 +1184,9 @@ function NavigationPage() {
         origin={origin}
         destination={destination}
         currentLocation={currentLocation}
+        gpsAccuracy={gpsAccuracy}
+        speed={speed}
+        activeStepIndex={activeGuidance?.stepIndex ?? stepIndex}
         route={route}
         isNavigating={isNavigating}
         followLocation={followLocation}
@@ -1195,7 +1204,7 @@ function NavigationPage() {
         laneGuidance={laneGuidance}
         onThreeDUnavailable={() => setMapPerspective('top')}
       />
-      {laneGuidance && !activeSearch && <LaneGuidance guidance={laneGuidance} />}
+      {isNavigating && travelMode === 'driving' && !destinationReached && !activeSearch && <LaneGuidance guidance={laneGuidance} />}
       <div className="map-brand-chip" aria-hidden="true">
         <span className="brand-mark"><Navigation size={17} strokeWidth={2.4} /></span>
         <span>Rêber</span>

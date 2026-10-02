@@ -53,6 +53,18 @@ button:focus-visible, input:focus-visible { outline: 3px solid #1a73e8; outline-
 .lane-guidance-lane svg { width: 100%; max-width: 50px; height: 56px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
 .lane-guidance-check { position: absolute; right: 3px; bottom: 3px; display: grid; width: 15px; height: 15px; place-items: center; border-radius: 50%; background: #fff; color: #188038; font-size: 11px; font-weight: 800; }
 .lane-guidance p { margin: 7px 0 0; color: #188038; font-size: 11px; font-weight: 650; }
+.lane-guidance .lane-guidance-note, .lane-guidance--unavailable p { color: #5f6368; font-weight: 400; line-height: 1.45; }
+.lane-guidance--unavailable { width: min(240px, calc(100vw - 100px)); }
+.lane-guidance--unavailable strong { color: #35424c; font-size: 12px; }
+.map-lane-sign { display: grid; width: max-content !important; max-width: 320px; height: auto !important; padding: 6px; border: 2px solid #fff; border-radius: 9px; color: #fff; background: #35424c; box-shadow: 0 3px 12px #20332c40; pointer-events: none; }
+.map-lane-sign-title { display: block; margin-bottom: 4px; font-size: 10px; text-align: center; }
+.map-lane-sign-road { display: flex; }
+.map-lane-sign-lane { display: grid; width: 26px; height: 32px; place-items: center; border-right: 1px dashed #ffffffa6; }
+.map-lane-sign-lane:last-child { border-right: 0; }
+.map-lane-sign-lane--recommended { background: #188038; }
+.map-lane-sign-lane svg { width: 24px; height: 30px; fill: none; stroke: currentColor; stroke-width: 1.2; stroke-linecap: round; stroke-linejoin: round; }
+.driving-location { display: block; width: 44px; height: 44px; filter: drop-shadow(0 2px 3px #20332c55); }
+.driving-location svg { width: 100%; height: 100%; }
 @media (max-width: 700px) { .lane-guidance { bottom: calc(245px + env(safe-area-inset-bottom)); left: 16px; padding: 10px; } }
 
 .navigation-panel { position: absolute; z-index: 500; top: 18px; bottom: 18px; left: 18px; display: flex; width: min(404px, calc(100vw - 36px)); flex-direction: column; overflow: auto; border: 1px solid #ffffffb8; border-radius: 19px; background: var(--paper); box-shadow: 0 14px 56px #1a30261c; scrollbar-width: thin; scrollbar-color: #d2ddd6 transparent; }
