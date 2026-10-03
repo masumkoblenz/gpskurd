@@ -12,6 +12,9 @@ type NavigationMapProps = {
   destination: Point | null
   currentLocation: Point | null
   route: NavigationRoute | null
+  routeCoordinates: [number, number][]
+  routeChoices: NavigationRoute[]
+  onRouteSelect: (route: NavigationRoute) => void
   isNavigating: boolean
   darkMode: boolean
   speed: number | null
@@ -65,6 +68,9 @@ export function NavigationMap({
   destination,
   currentLocation,
   route,
+  routeCoordinates,
+  routeChoices,
+  onRouteSelect,
   isNavigating,
   darkMode,
   speed,
@@ -92,6 +98,8 @@ export function NavigationMap({
   const hasTrafficSignalContextRef = useRef(Boolean(currentLocation || origin || destination || route))
   const [mapReady, setMapReady] = useState(false)
   const onManualPanRef = useRef(onManualPan)
+  const onRouteSelectRef = useRef(onRouteSelect)
+  const alternativeLayersRef = useRef<Polyline[]>([])
   const manualCameraChangeRef = useRef(false)
   const cameraStateRef = useRef({
     origin: null as Point | null,
@@ -114,6 +122,7 @@ export function NavigationMap({
   }>({ origin: null, destination: null, location: null, routeCasing: null, route: null })
 
   onManualPanRef.current = onManualPan
+  onRouteSelectRef.current = onRouteSelect
   hasTrafficSignalContextRef.current = hasTrafficSignalContextRef.current || Boolean(currentLocation || origin || destination || route)
 
   useEffect(() => {
@@ -313,7 +322,7 @@ export function NavigationMap({
     void import('leaflet').then((leaflet) => {
       if (mapRef.current !== map) return
       const layers = layersRef.current
-      for (const layer of [layers.origin, layers.destination, layers.routeCasing, layers.route]) {
+      for (const layer of [layers.origin, layers.destination]) {
         if (layer) map.removeLayer(layer)
       }
 
@@ -333,32 +342,74 @@ export function NavigationMap({
       layersRef.current.destination = destination
         ? makeMarker(destination, 'map-marker map-marker--destination', 'Ziel')
         : null
-      const routeCoordinates = route?.geometry.coordinates.map(([lon, lat]) => leaflet.latLng(lat, lon))
-      const routeMode = route?.mode === 'foot' ? 'foot' : 'driving'
-      layersRef.current.routeCasing = routeCoordinates?.length
-        ? leaflet.polyline(routeCoordinates, {
-            className: `navigation-route-casing navigation-route--${routeMode}`,
-            color: '#ffffff',
-            weight: routeMode === 'foot' ? 12 : 14,
-            opacity: 0.98,
-            lineCap: 'round',
-            lineJoin: 'round',
-            interactive: false,
-          }).addTo(map)
-        : null
-      layersRef.current.route = routeCoordinates?.length
-        ? leaflet.polyline(routeCoordinates, {
-            className: `navigation-route navigation-route--${routeMode}${isNavigating ? ' navigation-route--active' : ''}`,
-            color: routeMode === 'foot' ? '#198a78' : '#2875e5',
-            weight: routeMode === 'foot' ? 6 : 7,
-            opacity: 0.97,
-            lineCap: 'round',
-            lineJoin: 'round',
-            interactive: false,
-          }).addTo(map)
-        : null
     })
-  }, [origin, destination, route, isNavigating, mapReady])
+  }, [origin, destination, mapReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
+    let disposed = false
+    void import('leaflet').then((leaflet) => {
+      if (disposed || mapRef.current !== map) return
+      const coordinates = routeCoordinates.map(([lon, lat]) => leaflet.latLng(lat, lon))
+      const layers = layersRef.current
+      const routeMode = route?.mode === 'foot' ? 'foot' : 'driving'
+      if (coordinates.length < 2) {
+        layers.routeCasing?.remove()
+        layers.route?.remove()
+        layers.routeCasing = null
+        layers.route = null
+        return
+      }
+      if (layers.routeCasing) layers.routeCasing.setLatLngs(coordinates)
+      else layers.routeCasing = leaflet.polyline(coordinates, {
+        className: `navigation-route-casing navigation-route--${routeMode}`,
+        color: '#ffffff',
+        weight: routeMode === 'foot' ? 12 : 14,
+        opacity: 0.98,
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false,
+      }).addTo(map)
+      const routeStyle = {
+        color: routeMode === 'foot' ? '#198a78' : '#2875e5',
+        weight: routeMode === 'foot' ? 6 : 7,
+      }
+      layers.routeCasing.setStyle({ weight: routeMode === 'foot' ? 12 : 14 })
+      if (layers.route) layers.route.setLatLngs(coordinates).setStyle(routeStyle)
+      else layers.route = leaflet.polyline(coordinates, {
+        className: `navigation-route navigation-route--${routeMode}`,
+        ...routeStyle,
+        opacity: 0.97,
+        lineCap: 'round',
+        lineJoin: 'round',
+        interactive: false,
+      }).addTo(map)
+      layers.route.getElement()?.classList.toggle('navigation-route--active', isNavigating)
+      layers.routeCasing.bringToFront()
+      layers.route.bringToFront()
+    })
+    return () => { disposed = true }
+  }, [routeCoordinates, route, isNavigating, mapReady])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !mapReady) return
+    let disposed = false
+    void import('leaflet').then((leaflet) => {
+      if (disposed || mapRef.current !== map) return
+      alternativeLayersRef.current.forEach((layer) => layer.remove())
+      alternativeLayersRef.current = isNavigating ? [] : routeChoices.filter((choice) => choice !== route).map((choice) => {
+        const layer = leaflet.polyline(choice.geometry.coordinates.map(([lon, lat]) => [lat, lon]), {
+          color: '#8b99a8', weight: 7, opacity: 0.85, lineCap: 'round', lineJoin: 'round',
+        }).addTo(map)
+        layer.on('click', () => onRouteSelectRef.current(choice))
+        layer.bringToBack()
+        return layer
+      })
+    })
+    return () => { disposed = true }
+  }, [routeChoices, route, isNavigating, mapReady])
 
   useEffect(() => {
     const map = mapRef.current
@@ -457,6 +508,9 @@ export function NavigationMap({
             destination={destination}
             currentLocation={currentLocation}
             route={route}
+            routeCoordinates={routeCoordinates}
+            routeChoices={routeChoices}
+            onRouteSelect={onRouteSelect}
             trafficSignals={trafficSignals}
             isNavigating={isNavigating}
             followLocation={followLocation}

@@ -64,26 +64,26 @@ export async function findPlaces(query: string): Promise<SearchResult[]> {
   return response.json()
 }
 
-export async function getRoute(start: Point, end: Point, mode: TravelMode = 'driving'): Promise<NavigationRoute> {
+export async function getRoutes(start: Point, end: Point, mode: TravelMode = 'driving'): Promise<NavigationRoute[]> {
   const coordinates = `${start.lon},${start.lat};${end.lon},${end.lat}`
   const routingService = mode === 'foot'
     ? 'https://routing.openstreetmap.de/routed-foot'
     : 'https://router.project-osrm.org'
   const response = await fetch(
-    `${routingService}/route/v1/driving/${coordinates}?overview=full&steps=true&geometries=geojson`,
+    `${routingService}/route/v1/driving/${coordinates}?overview=full&steps=true&geometries=geojson&alternatives=true`,
   )
   if (!response.ok) throw new Error('Route konnte nicht berechnet werden. Bitte erneut versuchen.')
   const data = await response.json()
   if (data.code !== 'Ok' || !data.routes?.[0]) {
     throw new Error('Zwischen diesen Orten wurde keine Route gefunden.')
   }
-  return {
+  return data.routes.map((route: { distance: number; duration: number; geometry: NavigationRoute['geometry']; legs: { steps: RouteStep[] }[] }) => ({
     mode,
-    distance: data.routes[0].distance,
-    duration: data.routes[0].duration,
-    geometry: data.routes[0].geometry,
-    steps: data.routes[0].legs.flatMap((leg: { steps: RouteStep[] }) => leg.steps),
-  }
+    distance: route.distance,
+    duration: route.duration,
+    geometry: route.geometry,
+    steps: route.legs.flatMap((leg) => leg.steps),
+  }))
 }
 
 export function formatDistance(meters: number) {
@@ -131,6 +131,8 @@ export type RouteProjection = {
   along: number
   remaining: number
   bearing: number
+  segmentIndex: number
+  coordinate: [number, number]
 }
 
 export function navigationAnnouncementThresholds(mode: TravelMode) {
@@ -364,6 +366,8 @@ export function projectOntoRoute(
       along,
       remaining: 0,
       bearing: bearingBetween({ lat: previousLat, lon: previousLon }, { lat, lon }),
+      segmentIndex: index,
+      coordinate: [previousLon + progress * (lon - previousLon), previousLat + progress * (lat - previousLat)] as [number, number],
     }
     if (!closest || candidate.distance < closest.distance) closest = candidate
     if (
@@ -376,6 +380,27 @@ export function projectOntoRoute(
   }
   const projection = closestContinuous ?? closest
   return projection ? { ...projection, remaining: Math.max(0, totalDistance - projection.along) } : null
+}
+
+export function remainingRouteCoordinates(route: NavigationRoute, projection: RouteProjection | null) {
+  if (!projection) return route.geometry.coordinates
+  if (projection.remaining <= 0.1) return []
+  return [projection.coordinate, ...route.geometry.coordinates.slice(projection.segmentIndex)]
+}
+
+export function routeStepAtProjection(route: NavigationRoute, projection: RouteProjection | null) {
+  if (!projection) return Math.min(1, route.steps.length - 1)
+  let along = 0
+  for (let index = 0; index < route.steps.length - 1; index += 1) {
+    const coordinates = route.steps[index].geometry.coordinates
+    for (let coordinateIndex = 1; coordinateIndex < coordinates.length; coordinateIndex += 1) {
+      const start = coordinates[coordinateIndex - 1]
+      const end = coordinates[coordinateIndex]
+      along += distanceBetween({ lon: start[0], lat: start[1] }, { lon: end[0], lat: end[1] })
+    }
+    if (projection.along < along - 0.1) return index + 1
+  }
+  return Math.max(0, route.steps.length - 1)
 }
 
 export function distanceToRoute(point: Point, coordinates: [number, number][], previousAlong?: number) {

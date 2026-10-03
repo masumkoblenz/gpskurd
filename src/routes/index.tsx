@@ -37,10 +37,12 @@ import {
   formatDistance,
   formatDuration,
   germanInstructionFor,
-  getRoute,
+  getRoutes,
   placeSubtitle,
   placeTitle,
   projectOntoRoute,
+  remainingRouteCoordinates,
+  routeStepAtProjection,
   type NavigationGuidance,
   type NavigationRoute,
   type Point,
@@ -160,6 +162,7 @@ function NavigationPage() {
   const [destination, setDestination] = useState<Point | null>(null)
   const [destinationName, setDestinationName] = useState('')
   const [route, setRoute] = useState<NavigationRoute | null>(null)
+  const [routeChoices, setRouteChoices] = useState<NavigationRoute[]>([])
   const [travelMode, setTravelMode] = useState<TravelMode>('driving')
   const [darkMode, setDarkMode] = useState(false)
   const [routeError, setRouteError] = useState('')
@@ -224,6 +227,9 @@ function NavigationPage() {
   const originEditedRef = useRef(false)
   const destinationRef = useRef(destination)
   const lastLocationFixAtRef = useRef(0)
+  const locationHandlerRef = useRef<(position: GeolocationPosition) => void>(() => undefined)
+  const restartLocationWatchRef = useRef<() => void>(() => undefined)
+  const pendingLocationRef = useRef<((point: Point) => void) | null>(null)
   const headingUpRef = useRef(headingUpEnabled)
   const voiceEnabledRef = useRef(voiceEnabled)
   const speechLanguageRef = useRef(speechLanguage)
@@ -234,6 +240,12 @@ function NavigationPage() {
   routeRef.current = route
   destinationRef.current = destination
   stepIndexRef.current = stepIndex
+
+  const applyRouteChoices = (choices: NavigationRoute[]) => {
+    setRouteChoices(choices)
+    routeRef.current = choices[0] ?? null
+    setRoute(choices[0] ?? null)
+  }
 
   const getBrowserPreferenceId = () => {
     if (browserPreferenceIdRef.current) return browserPreferenceIdRef.current
@@ -409,29 +421,31 @@ function NavigationPage() {
       : 'Die Route konnte nicht berechnet werden. Bitte prüfen Sie Start und Ziel und versuchen Sie es erneut.'
   }
 
-  const updateCurrentLocation = (coords: GeolocationCoordinates, forceHeading = false) => {
-    if (!Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude)) return null
+  const updateCurrentLocation = (coords: GeolocationCoordinates, timestamp: number) => {
+    if (!Number.isFinite(coords.latitude) || !Number.isFinite(coords.longitude) ||
+      Math.abs(coords.latitude) > 90 || Math.abs(coords.longitude) > 180 ||
+      timestamp <= lastLocationFixAtRef.current || Date.now() - timestamp > 30_000) return null
     const accuracy = coords.accuracy
     const previous = currentLocationRef.current
-    const now = Date.now()
-    if (!Number.isFinite(accuracy) || accuracy < 0 || accuracy > 100) {
+    if (!Number.isFinite(accuracy) || accuracy < 0) {
       setGpsStatus('error')
       return null
     }
+    if (accuracy > 100 && previous && (gpsAccuracyRef.current ?? Infinity) <= 100) return null
 
     const incoming = { lat: coords.latitude, lon: coords.longitude }
     let movement = 0
     let elapsedSeconds = 0
     if (previous) {
       movement = distanceBetween(previous, incoming)
-      elapsedSeconds = Math.max(0, now - lastLocationFixAtRef.current) / 1_000
+      elapsedSeconds = Math.max(0, timestamp - lastLocationFixAtRef.current) / 1_000
       const defaultSpeed = travelMode === 'foot' ? 2 : 13.9
       const reportedSpeed = coords.speed !== null && Number.isFinite(coords.speed) && coords.speed >= 0
         ? Math.min(coords.speed, travelMode === 'foot' ? 4 : 45)
         : defaultSpeed
       const plausibleMovement = Math.max(
         travelMode === 'foot' ? 18 : 35,
-        reportedSpeed * elapsedSeconds * 2 + Math.min(accuracy, 40) * 1.5,
+        reportedSpeed * elapsedSeconds * 2 + accuracy + (gpsAccuracyRef.current ?? accuracy),
       )
       if (movement > plausibleMovement && elapsedSeconds < 30) {
         return null
@@ -439,7 +453,7 @@ function NavigationPage() {
     }
 
     currentLocationRef.current = incoming
-    lastLocationFixAtRef.current = now
+    lastLocationFixAtRef.current = timestamp
     setGpsStatus('ready')
     gpsAccuracyRef.current = accuracy
     setCurrentLocation(incoming)
@@ -455,7 +469,7 @@ function NavigationPage() {
     const hasReliableMovementCourse = accuracy <= maximumCourseAccuracy && previous && elapsedSeconds <= 10 &&
       movement >= (travelMode === 'foot' ? 4 : 8) && estimatedSpeed > minimumCourseSpeed
     const resolvedCourse = hasReliableGpsCourse ? course : hasReliableMovementCourse ? bearingBetween(previous, incoming) : null
-    if (resolvedCourse !== null && (headingUpRef.current || forceHeading)) {
+    if (resolvedCourse !== null && (headingUpRef.current || pendingLocationRef.current)) {
       setHeading((oldHeading) => {
         if (oldHeading === null) return resolvedCourse
         const difference = Math.abs(((resolvedCourse - oldHeading + 540) % 360) - 180)
@@ -463,50 +477,43 @@ function NavigationPage() {
       })
     }
 
+    if (!originEditedRef.current && !isNavigating) {
+      setOrigin(incoming)
+      setOriginName('Mein Standort')
+      setOriginQuery('Mein Standort')
+    }
+    const onLocated = pendingLocationRef.current
+    pendingLocationRef.current = null
+    onLocated?.(incoming)
     return incoming
   }
 
   const requestLocation = (onLocated?: (point: Point) => void) => {
     if (!navigator.geolocation) {
       setGpsStatus('error')
-      if (onLocated && currentLocationRef.current) {
-        setCurrentLocation(currentLocationRef.current)
-        onLocated(currentLocationRef.current)
-      }
       return
     }
+    pendingLocationRef.current = (point) => {
+      setFollowLocation(true)
+      if (onLocated) onLocated(point)
+      else setMapCenterRequest((request) => request + 1)
+    }
     setGpsStatus('loading')
+    restartLocationWatchRef.current()
     navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        const point = updateCurrentLocation(coords, Boolean(onLocated))
-        if (!point) return
-        setFollowLocation(true)
-        if (onLocated) onLocated(point)
-        else setMapCenterRequest((request) => request + 1)
+      (position) => locationHandlerRef.current(position),
+      (error) => {
+        if (error.code === 1) pendingLocationRef.current = null
+        if (error.code === 1 || Date.now() - lastLocationFixAtRef.current > 20_000) setGpsStatus('error')
       },
-      () => {
-        setGpsStatus('error')
-        if (onLocated && currentLocationRef.current) {
-          setCurrentLocation(currentLocationRef.current)
-          onLocated(currentLocationRef.current)
-        }
-      },
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
+      { enableHighAccuracy: true, timeout: 20_000, maximumAge: 0 },
     )
   }
 
   const requestOriginLocation = () => {
     originEditedRef.current = false
-    if (!navigator.geolocation) {
-      setGpsStatus('error')
-      setFollowLocation(false)
-      return
-    }
-    setGpsStatus('loading')
-    navigator.geolocation.getCurrentPosition(
-      ({ coords }) => {
-        const point = updateCurrentLocation(coords)
-        if (!point) return
+    requestLocation(
+      (point) => {
         if (originEditedRef.current) return
         const requestId = ++routeRequestRef.current
         setOrigin(point)
@@ -514,16 +521,16 @@ function NavigationPage() {
         setOriginQuery('Mein Standort')
         setFollowLocation(true)
         setMapCenterRequest((request) => request + 1)
-        setRoute(null)
+        applyRouteChoices([])
         setGuidance(null)
         setStepIndex(0)
         const selectedDestination = destinationRef.current
         if (!selectedDestination) return
         setRouting(true)
         setRouteError('')
-        void getRoute(point, selectedDestination, travelMode)
-          .then((nextRoute) => {
-            if (routeRequestRef.current === requestId) setRoute(nextRoute)
+        void getRoutes(point, selectedDestination, travelMode)
+          .then((choices) => {
+            if (routeRequestRef.current === requestId) applyRouteChoices(choices)
           })
           .catch((error: unknown) => {
             if (routeRequestRef.current === requestId) {
@@ -534,11 +541,6 @@ function NavigationPage() {
             if (routeRequestRef.current === requestId) setRouting(false)
           })
       },
-      () => {
-        setGpsStatus('error')
-        setFollowLocation(false)
-      },
-      { enableHighAccuracy: true, timeout: 15_000, maximumAge: 2_000 },
     )
   }
 
@@ -608,7 +610,7 @@ function NavigationPage() {
   const resetRouteForStopEdit = () => {
     routeRequestRef.current += 1
     navigationSessionRef.current += 1
-    setRoute(null)
+    applyRouteChoices([])
     setGuidance(null)
     setRouteError('')
     setRouting(false)
@@ -650,7 +652,7 @@ function NavigationPage() {
     setOriginName(selectedOriginName)
     setOriginQuery(selectedOriginName)
     setOriginResults([])
-    setRoute(null)
+    applyRouteChoices([])
     setGuidance(null)
     setRouting(false)
     setIsNavigating(false)
@@ -662,8 +664,8 @@ function NavigationPage() {
       const requestId = routeRequestRef.current
       setRouting(true)
       try {
-        const nextRoute = await getRoute(point, destination, travelMode)
-        if (routeRequestRef.current === requestId) setRoute(nextRoute)
+        const choices = await getRoutes(point, destination, travelMode)
+        if (routeRequestRef.current === requestId) applyRouteChoices(choices)
       } catch (error) {
         if (routeRequestRef.current === requestId) {
           setRouteError(routeFailureMessage(error))
@@ -697,7 +699,7 @@ function NavigationPage() {
     setQuery(selectedDestinationName)
     setResults([])
     setOriginResults([])
-    setRoute(null)
+    applyRouteChoices([])
     setGuidance(null)
     setRouteError('')
     setDestinationReached(false)
@@ -715,8 +717,8 @@ function NavigationPage() {
 
     setRouting(true)
     try {
-      const nextRoute = await getRoute(startPoint, point, travelMode)
-      if (routeRequestRef.current === requestId) setRoute(nextRoute)
+      const choices = await getRoutes(startPoint, point, travelMode)
+      if (routeRequestRef.current === requestId) applyRouteChoices(choices)
     } catch (error) {
       if (routeRequestRef.current === requestId) {
         setRouteError(routeFailureMessage(error))
@@ -730,7 +732,7 @@ function NavigationPage() {
     if (mode === travelMode) return
     const requestId = ++routeRequestRef.current
     setTravelMode(mode)
-    setRoute(null)
+    applyRouteChoices([])
     setGuidance(null)
     setRouteError('')
     setStepIndex(0)
@@ -741,8 +743,8 @@ function NavigationPage() {
     setRouting(true)
     try {
       const startPoint = originName === 'Mein Standort' ? currentLocationRef.current ?? origin : origin
-      const nextRoute = await getRoute(startPoint, destination, mode)
-      if (routeRequestRef.current === requestId) setRoute(nextRoute)
+      const choices = await getRoutes(startPoint, destination, mode)
+      if (routeRequestRef.current === requestId) applyRouteChoices(choices)
     } catch (error) {
       if (routeRequestRef.current === requestId) setRouteError(routeFailureMessage(error))
     } finally {
@@ -750,179 +752,206 @@ function NavigationPage() {
     }
   }
 
-  useEffect(() => {
-    if (!isNavigating) return
-    const navigationSessionId = navigationSessionRef.current
-    if (!navigator.geolocation) {
-      setGpsStatus('error')
-      setFollowLocation(false)
-      return
-    }
+  locationHandlerRef.current = ({ coords, timestamp }) => {
+    const point = updateCurrentLocation(coords, timestamp)
+    if (!point) return
 
-    const watchId = navigator.geolocation.watchPosition(
-      ({ coords }) => {
-        if (navigationSessionRef.current !== navigationSessionId) return
-        const point = updateCurrentLocation(coords)
-        if (!point) return
+    const activeRoute = routeRef.current
+    if (isNavigating && activeRoute?.steps.length) {
+      if (coords.accuracy > 100) {
+        setGuidance(null)
+        clearNavigationSpeech()
+        return
+      }
+      const now = Date.now()
+      const previousProjection = routeProgressRef.current?.route === activeRoute
+        ? routeProgressRef.current.projection.along
+        : undefined
+      const projection = projectOntoRoute(point, activeRoute.geometry.coordinates, previousProjection)
+      const isFoot = activeRoute.mode === 'foot'
+      const reliableFix = coords.accuracy <= (isFoot ? 25 : 45)
+      const offRouteThreshold = isFoot
+        ? Math.max(18, Math.min(coords.accuracy * 1.2, 40))
+        : Math.max(35, Math.min(coords.accuracy * 1.5, 70))
+      const isOffRoute = reliableFix && Boolean(projection && projection.distance > offRouteThreshold)
+      if (isOffRoute) {
+        const anchor = offRouteAnchorRef.current
+        if (!anchor) {
+          offRouteAnchorRef.current = { point, accuracy: coords.accuracy, lastFixAt: now, count: 1 }
+        } else if (now - anchor.lastFixAt >= 750) {
+          anchor.lastFixAt = now
+          anchor.count += 1
+        }
+      } else {
+        offRouteAnchorRef.current = null
+      }
+      if (projection && !isOffRoute) routeProgressRef.current = { route: activeRoute, projection }
 
-        const activeRoute = routeRef.current
-        if (activeRoute?.steps.length) {
-          const now = Date.now()
-          const previousProjection = routeProgressRef.current?.route === activeRoute
-            ? routeProgressRef.current.projection.along
-            : undefined
-          const projection = projectOntoRoute(point, activeRoute.geometry.coordinates, previousProjection)
-          const isFoot = activeRoute.mode === 'foot'
-          const reliableFix = coords.accuracy <= (isFoot ? 25 : 45)
-          const offRouteThreshold = isFoot
-            ? Math.max(18, Math.min(coords.accuracy * 1.2, 40))
-            : Math.max(35, Math.min(coords.accuracy * 1.5, 70))
-          const isOffRoute = reliableFix && Boolean(projection && projection.distance > offRouteThreshold)
-          if (isOffRoute) {
-            const anchor = offRouteAnchorRef.current
-            if (!anchor) {
-              offRouteAnchorRef.current = { point, accuracy: coords.accuracy, lastFixAt: now, count: 1 }
-            } else if (now - anchor.lastFixAt >= 750) {
-              anchor.lastFixAt = now
-              anchor.count += 1
-            }
-          } else {
-            offRouteAnchorRef.current = null
+      const arrivalDistance = destination ? distanceBetween(point, destination) : Number.POSITIVE_INFINITY
+      const arrivalRadius = isFoot ? 15 : 25
+      const accurateArrivalFix = reliableFix && coords.accuracy <= (isFoot ? 20 : 30) && arrivalDistance <= arrivalRadius
+      if (!accurateArrivalFix) {
+        arrivalFixesRef.current = 0
+        arrivalLastFixAtRef.current = 0
+      } else if (now - arrivalLastFixAtRef.current >= 750) {
+        arrivalFixesRef.current += 1
+        arrivalLastFixAtRef.current = now
+      }
+      const hasReachedDestination = arrivalFixesRef.current >= 3
+      const offRouteAnchor = offRouteAnchorRef.current
+      const requiredDeviationTravel = (isFoot ? 8 : 15) + Math.min(
+        offRouteAnchor?.accuracy ?? coords.accuracy,
+        coords.accuracy,
+        isFoot ? 20 : 35,
+      ) * 0.6
+      const hasConfirmedDeviation = Boolean(
+        offRouteAnchor && offRouteAnchor.count >= 3 && (
+          distanceBetween(offRouteAnchor.point, point) >= requiredDeviationTravel
+        ),
+      )
+      if ((!isOffRoute && !hasConfirmedDeviation) || hasReachedDestination) {
+        const activeIndex = hasReachedDestination ? activeRoute.steps.length - 1 : stepIndexRef.current
+        const currentGuidance = createNavigationGuidance(
+          activeRoute,
+          point,
+          activeIndex,
+          coords.accuracy,
+        )
+        setGuidance(currentGuidance)
+        if (currentGuidance) {
+          const maneuverChanged = currentGuidance.stepIndex !== stepIndexRef.current
+          if (maneuverChanged) {
+            stepIndexRef.current = currentGuidance.stepIndex
+            setStepIndex(currentGuidance.stepIndex)
           }
-          if (projection && !isOffRoute) routeProgressRef.current = { route: activeRoute, projection }
-
-          const arrivalDistance = destination ? distanceBetween(point, destination) : Number.POSITIVE_INFINITY
-          const arrivalRadius = isFoot ? 15 : 25
-          const accurateArrivalFix = reliableFix && coords.accuracy <= (isFoot ? 20 : 30) && arrivalDistance <= arrivalRadius
-          if (!accurateArrivalFix) {
-            arrivalFixesRef.current = 0
-            arrivalLastFixAtRef.current = 0
-          } else if (now - arrivalLastFixAtRef.current >= 750) {
-            arrivalFixesRef.current += 1
-            arrivalLastFixAtRef.current = now
+          const pendingCue = speechQueueRef.current[0]
+          if (pendingCue?.stepIndex !== undefined) {
+            speechQueueRef.current = pendingCue.stepIndex === currentGuidance.stepIndex && currentGuidance.distanceMeters !== null
+              ? [{ ...pendingCue, text: guidanceSpeechText(currentGuidance), language: speechLanguageRef.current }]
+              : []
           }
-          const hasReachedDestination = arrivalFixesRef.current >= 3
-          const offRouteAnchor = offRouteAnchorRef.current
-          const requiredDeviationTravel = (isFoot ? 8 : 15) + Math.min(
-            offRouteAnchor?.accuracy ?? coords.accuracy,
-            coords.accuracy,
-            isFoot ? 20 : 35,
-          ) * 0.6
-          const hasConfirmedDeviation = Boolean(
-            offRouteAnchor && offRouteAnchor.count >= 3 && (
-              distanceBetween(offRouteAnchor.point, point) >= requiredDeviationTravel
-            ),
-          )
-          if (!hasConfirmedDeviation || hasReachedDestination) {
-            const activeIndex = hasReachedDestination ? activeRoute.steps.length - 1 : stepIndexRef.current
-            const currentGuidance = createNavigationGuidance(
-              activeRoute,
-              point,
-              activeIndex,
-              coords.accuracy,
-            )
-            setGuidance(currentGuidance)
-            if (currentGuidance) {
-              const maneuverChanged = currentGuidance.stepIndex !== stepIndexRef.current
-              if (maneuverChanged) {
-                stepIndexRef.current = currentGuidance.stepIndex
-                setStepIndex(currentGuidance.stepIndex)
-              }
-              const pendingCue = speechQueueRef.current[0]
-              if (pendingCue?.stepIndex !== undefined) {
-                speechQueueRef.current = pendingCue.stepIndex === currentGuidance.stepIndex && currentGuidance.distanceMeters !== null
-                  ? [{ ...pendingCue, text: guidanceSpeechText(currentGuidance), language: speechLanguageRef.current }]
-                  : []
-              }
-              const instruction = maneuverAnnouncement(currentGuidance)
-              if (instruction) {
-                clearNavigationSpeech()
-                queueNavigationSpeech(instruction, currentGuidance.stepIndex)
-              }
-              else if (
-                maneuverChanged &&
-                currentGuidance.stepIndex > 0 &&
-                currentGuidance.distanceMeters !== null &&
-                currentGuidance.phase === null
-              ) {
-                clearNavigationSpeech()
-                announcedManeuversRef.current.set(currentGuidance.stepIndex, new Set(['early']))
-                queueNavigationSpeech(guidanceSpeechText(currentGuidance), currentGuidance.stepIndex)
-              }
-            }
-          } else {
-            setGuidance(null)
+          const instruction = maneuverAnnouncement(currentGuidance)
+          if (instruction) {
             clearNavigationSpeech()
+            queueNavigationSpeech(instruction, currentGuidance.stepIndex)
           }
-
-          if (hasReachedDestination) {
-            setDestinationReached(true)
-            stopNavigationRef.current(true)
-            return
-          }
-
-          if (
-            destination &&
-            isOffRoute &&
-            hasConfirmedDeviation &&
-            now >= rerouteRetryAfterRef.current &&
-            !reroutingRef.current
+          else if (
+            maneuverChanged &&
+            currentGuidance.stepIndex > 0 &&
+            currentGuidance.distanceMeters !== null &&
+            currentGuidance.phase === null
           ) {
-            reroutingRef.current = true
             clearNavigationSpeech()
-            const requestId = ++routeRequestRef.current
-            setRouting(true)
-            setRouteError('')
-            void getRoute(point, destination, travelMode)
-              .then((newRoute) => {
-                if (routeRequestRef.current === requestId) {
-                  const latestPoint = currentLocationRef.current ?? point
-                  const latestAccuracy = gpsAccuracyRef.current ?? coords.accuracy
-                  const newProjection = projectOntoRoute(latestPoint, newRoute.geometry.coordinates)
-                  const newGuidance = createNavigationGuidance(newRoute, latestPoint, 1, latestAccuracy)
-                  routeRef.current = newRoute
-                  setRoute(newRoute)
-                  setCurrentLocation(latestPoint)
-                  setGuidance(newGuidance)
-                  routeProgressRef.current = newProjection ? { route: newRoute, projection: newProjection } : null
-                  offRouteAnchorRef.current = null
-                  arrivalFixesRef.current = 0
-                  arrivalLastFixAtRef.current = 0
-                  rerouteRetryAfterRef.current = 0
-                  const nextStep = newGuidance?.stepIndex ?? 0
-                  stepIndexRef.current = nextStep
-                  setStepIndex(nextStep)
-                  announcedManeuversRef.current.clear()
-                  if (newGuidance && nextStep > 0 && newGuidance.distanceMeters !== null) {
-                    const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
-                    if (newGuidance.phase === 'repeat' || newGuidance.phase === 'now') announcedPhases.add('repeat')
-                    if (newGuidance.phase === 'now') announcedPhases.add('now')
-                    announcedManeuversRef.current.set(nextStep, announcedPhases)
-                    queueNavigationSpeech(guidanceSpeechText(newGuidance), nextStep)
-                  }
-                }
-              })
-              .catch(() => {
-                if (routeRequestRef.current === requestId) {
-                  rerouteRetryAfterRef.current = Date.now() + 5_000
-                  setRouteError('Neue Route konnte nicht berechnet werden. Die Neuberechnung wird erneut versucht.')
-                }
-              })
-              .finally(() => {
-                reroutingRef.current = false
-                if (routeRequestRef.current === requestId) setRouting(false)
-              })
+            announcedManeuversRef.current.set(currentGuidance.stepIndex, new Set(['early']))
+            queueNavigationSpeech(guidanceSpeechText(currentGuidance), currentGuidance.stepIndex)
           }
         }
-      },
-      () => {
-        setGpsStatus('error')
-        setFollowLocation(false)
-      },
-      { enableHighAccuracy: true, maximumAge: 1_000, timeout: 15_000 },
-    )
-    return () => navigator.geolocation.clearWatch(watchId)
-  }, [destination, isNavigating, travelMode, voiceEnabled])
+      } else {
+        setGuidance(null)
+        clearNavigationSpeech()
+      }
+
+      if (hasReachedDestination) {
+        setDestinationReached(true)
+        stopNavigationRef.current(true)
+        return
+      }
+
+      if (
+        destination &&
+        isOffRoute &&
+        hasConfirmedDeviation &&
+        now >= rerouteRetryAfterRef.current &&
+        !reroutingRef.current
+      ) {
+        reroutingRef.current = true
+        clearNavigationSpeech()
+        const requestId = ++routeRequestRef.current
+        setRouting(true)
+        setRouteError('')
+        void getRoutes(point, destination, travelMode)
+          .then((choices) => {
+            if (routeRequestRef.current === requestId) {
+              const newRoute = choices[0]
+              const latestPoint = currentLocationRef.current ?? point
+              const latestAccuracy = gpsAccuracyRef.current ?? coords.accuracy
+              const newProjection = projectOntoRoute(latestPoint, newRoute.geometry.coordinates)
+              const newGuidance = createNavigationGuidance(newRoute, latestPoint, routeStepAtProjection(newRoute, newProjection), latestAccuracy)
+              routeRef.current = newRoute
+              applyRouteChoices(choices)
+              setCurrentLocation(latestPoint)
+              setGuidance(newGuidance)
+              routeProgressRef.current = newProjection ? { route: newRoute, projection: newProjection } : null
+              offRouteAnchorRef.current = null
+              arrivalFixesRef.current = 0
+              arrivalLastFixAtRef.current = 0
+              rerouteRetryAfterRef.current = 0
+              const nextStep = newGuidance?.stepIndex ?? 0
+              stepIndexRef.current = nextStep
+              setStepIndex(nextStep)
+              announcedManeuversRef.current.clear()
+              if (newGuidance && nextStep > 0 && newGuidance.distanceMeters !== null) {
+                const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
+                if (newGuidance.phase === 'repeat' || newGuidance.phase === 'now') announcedPhases.add('repeat')
+                if (newGuidance.phase === 'now') announcedPhases.add('now')
+                announcedManeuversRef.current.set(nextStep, announcedPhases)
+                queueNavigationSpeech(guidanceSpeechText(newGuidance), nextStep)
+              }
+            }
+          })
+          .catch(() => {
+            if (routeRequestRef.current === requestId) {
+              rerouteRetryAfterRef.current = Date.now() + 5_000
+              setRouteError('Neue Route konnte nicht berechnet werden. Die Neuberechnung wird erneut versucht.')
+            }
+          })
+          .finally(() => {
+            if (routeRequestRef.current === requestId) {
+              reroutingRef.current = false
+              setRouting(false)
+            }
+          })
+      }
+    }
+  }
+
+  useEffect(() => {
+    if (!navigator.geolocation) {
+      setGpsStatus('error')
+      return
+    }
+    let disposed = false
+    const acceptPosition = (position: GeolocationPosition) => {
+      if (!disposed) locationHandlerRef.current(position)
+    }
+    const handleError = (error: GeolocationPositionError) => {
+      if (disposed) return
+      if (error.code === 1) pendingLocationRef.current = null
+      if (error.code === 1 || Date.now() - lastLocationFixAtRef.current > 20_000) setGpsStatus('error')
+    }
+    const options = { enableHighAccuracy: true, maximumAge: 0, timeout: 20_000 }
+    let watchId: number | null = null
+    const restartWatch = () => {
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId)
+      watchId = navigator.geolocation.watchPosition(acceptPosition, handleError, options)
+    }
+    restartLocationWatchRef.current = restartWatch
+    restartWatch()
+    const refreshPosition = () => {
+      if (document.visibilityState === 'visible') {
+        restartWatch()
+        navigator.geolocation.getCurrentPosition(acceptPosition, handleError, options)
+      }
+    }
+    document.addEventListener('visibilitychange', refreshPosition)
+    return () => {
+      disposed = true
+      if (watchId !== null) navigator.geolocation.clearWatch(watchId)
+      document.removeEventListener('visibilitychange', refreshPosition)
+      pendingLocationRef.current = null
+      restartLocationWatchRef.current = () => undefined
+    }
+  }, [])
 
   const activeGuidance = guidance?.route === route ? guidance : null
   const activeStep = activeGuidance?.step
@@ -1097,10 +1126,10 @@ function NavigationPage() {
     offRouteAnchorRef.current = null
     arrivalFixesRef.current = 0
     arrivalLastFixAtRef.current = 0
-    const nextStep = Math.min(1, route.steps.length - 1)
     announcedManeuversRef.current.clear()
     const startPoint = currentLocationRef.current
     const initialProjection = startPoint ? projectOntoRoute(startPoint, route.geometry.coordinates) : null
+    const nextStep = routeStepAtProjection(route, initialProjection)
     const locationIsOnRoute = initialProjection && initialProjection.distance <= 65
     routeProgressRef.current = locationIsOnRoute ? { route, projection: initialProjection } : null
     const initialGuidance = startPoint && locationIsOnRoute
@@ -1148,6 +1177,40 @@ function NavigationPage() {
     if (!preserveSpeech) clearNavigationSpeech()
   }
   stopNavigationRef.current = stopNavigation
+
+  const selectRoute = (nextRoute: NavigationRoute) => {
+    if (nextRoute === routeRef.current) return
+    routeRequestRef.current += 1
+    reroutingRef.current = false
+    rerouteRetryAfterRef.current = 0
+    offRouteAnchorRef.current = null
+    arrivalFixesRef.current = 0
+    arrivalLastFixAtRef.current = 0
+    announcedManeuversRef.current.clear()
+    clearNavigationSpeech()
+    routeRef.current = nextRoute
+    setRoute(nextRoute)
+    setRouting(false)
+    setRouteError('')
+    setDestinationReached(false)
+    const point = currentLocationRef.current
+    const projection = isNavigating && point ? projectOntoRoute(point, nextRoute.geometry.coordinates) : null
+    routeProgressRef.current = projection ? { route: nextRoute, projection } : null
+    const nextGuidance = isNavigating && point && projection && projection.distance <= 65
+      ? createNavigationGuidance(nextRoute, point, routeStepAtProjection(nextRoute, projection), gpsAccuracyRef.current ?? 10)
+      : null
+    const nextStepIndex = nextGuidance?.stepIndex ?? 0
+    stepIndexRef.current = nextStepIndex
+    setStepIndex(nextStepIndex)
+    setGuidance(nextGuidance)
+    if (nextGuidance && voiceEnabledRef.current && nextGuidance.distanceMeters !== null) {
+      const announcedPhases = new Set<'early' | 'repeat' | 'now'>(['early'])
+      if (nextGuidance.phase === 'repeat' || nextGuidance.phase === 'now') announcedPhases.add('repeat')
+      if (nextGuidance.phase === 'now') announcedPhases.add('now')
+      announcedManeuversRef.current.set(nextStepIndex, announcedPhases)
+      queueNavigationSpeech(guidanceSpeechText(nextGuidance), nextStepIndex)
+    }
+  }
 
   const toggleRotation = () => {
     const nextMode = !headingUpEnabled
@@ -1210,7 +1273,7 @@ function NavigationPage() {
     setDestination(null)
     setDestinationName('')
     setQuery('')
-    setRoute(null)
+    applyRouteChoices([])
     setGuidance(null)
     setRouteError('')
     setRouting(false)
@@ -1240,7 +1303,7 @@ function NavigationPage() {
     setDestinationName(previousOriginName)
     setOriginQuery(nextOriginText)
     setOriginResults([])
-    setRoute(null)
+    applyRouteChoices([])
     setGuidance(null)
     setRouteError('')
     setRouting(false)
@@ -1256,8 +1319,8 @@ function NavigationPage() {
 
     setRouting(true)
     try {
-      const nextRoute = await getRoute(previousDestination, previousOrigin, travelMode)
-      if (routeRequestRef.current === requestId) setRoute(nextRoute)
+      const choices = await getRoutes(previousDestination, previousOrigin, travelMode)
+      if (routeRequestRef.current === requestId) applyRouteChoices(choices)
     } catch (error) {
       if (routeRequestRef.current === requestId) {
         setRouteError(routeFailureMessage(error))
@@ -1276,6 +1339,9 @@ function NavigationPage() {
       routeProgressRef.current?.route === route ? routeProgressRef.current.projection.along : undefined,
     )
     : null
+  const visibleRouteCoordinates = route
+    ? remainingRouteCoordinates(route, isNavigating ? liveProjection : null)
+    : []
   const liveRemainingDistance = isNavigating && liveProjection
     ? liveProjection.remaining
     : plannedRemainingDistance
@@ -1288,6 +1354,24 @@ function NavigationPage() {
     : plannedRemainingDuration
   const arrivalTime = new Intl.DateTimeFormat('de-DE', { hour: '2-digit', minute: '2-digit' }).format(
     new Date(Date.now() + liveRemainingDuration * 1_000),
+  )
+
+  const renderRouteChoices = () => routeChoices.length > 1 && (
+    <div className="route-choices" role="group" aria-label="Rêyên alternatîf">
+      {routeChoices.map((choice, index) => (
+        <button
+          type="button"
+          className={`route-choice${choice === route ? ' route-choice--selected' : ''}`}
+          key={index}
+          aria-pressed={choice === route}
+          disabled={routing}
+          onClick={() => selectRoute(choice)}
+        >
+          <span>{index === 0 ? 'Rêya pêşniyarkirî' : `Rêya alternatîf ${index}`}</span>
+          <strong>{formatDuration(choice.duration)} · {formatDistance(choice.distance)}</strong>
+        </button>
+      ))}
+    </div>
   )
 
   const renderAppMenu = (navigationMenu = false) => (
@@ -1309,6 +1393,7 @@ function NavigationPage() {
         <div className="app-menu-popover" id="app-settings-menu" role="region" aria-label="Menü">
           {appMenuSection === 'main' ? (
             <div className="app-menu-items">
+              {isNavigating && renderRouteChoices()}
               <button className="app-menu-item app-menu-toggle" type="button" role="switch" aria-checked={threeDEnabled} onClick={() => setMapPerspective((perspective) => perspective === 'top' ? 'driving' : 'top')}>
                 <Box size={17} aria-hidden="true" />
                 <span>3D-Karte</span>
@@ -1357,6 +1442,9 @@ function NavigationPage() {
         speed={speed}
         activeStepIndex={activeGuidance?.stepIndex ?? stepIndex}
         route={route}
+        routeCoordinates={visibleRouteCoordinates}
+        routeChoices={routing ? [] : routeChoices}
+        onRouteSelect={selectRoute}
         isNavigating={isNavigating}
         darkMode={darkMode}
         followLocation={followLocation}
@@ -1672,6 +1760,7 @@ function NavigationPage() {
               <div className="summary-metric summary-metric--distance"><strong>{formatDistance(route.distance)}</strong><span>STRECKE</span></div>
             </div>
           </section>
+          {renderRouteChoices()}
         </section>
       )}
 
