@@ -13,6 +13,7 @@ type NavigationMapProps = {
   currentLocation: Point | null
   route: NavigationRoute | null
   isNavigating: boolean
+  darkMode: boolean
   speed: number | null
   gpsAccuracy: number | null
   activeStepIndex: number
@@ -65,6 +66,7 @@ export function NavigationMap({
   currentLocation,
   route,
   isNavigating,
+  darkMode,
   speed,
   gpsAccuracy,
   activeStepIndex,
@@ -448,6 +450,7 @@ export function NavigationMap({
           <NavigationMap3D
             leafletMap={mapRef.current}
             enabled={threeDEnabled}
+            darkMode={darkMode}
             perspectivePitch={perspectivePitch}
             visible={threeDVisible}
             origin={origin}

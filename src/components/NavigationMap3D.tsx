@@ -10,6 +10,7 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url'
 type NavigationMap3DProps = {
   leafletMap: LeafletMap
   enabled: boolean
+  darkMode: boolean
   perspectivePitch: number
   visible: boolean
   origin: Point | null
@@ -34,6 +35,76 @@ type NavigationMap3DProps = {
 }
 
 const styleUrl = 'https://tiles.openfreemap.org/styles/liberty'
+const mapColorProperties = [
+  'background-color',
+  'fill-color',
+  'fill-outline-color',
+  'fill-extrusion-color',
+  'line-color',
+  'text-color',
+  'text-halo-color',
+  'icon-color',
+] as const
+
+function nightColorFor(layerId: string, property: (typeof mapColorProperties)[number]) {
+  if (property === 'background-color') return '#111a20'
+  if (property === 'fill-extrusion-color') return '#303a43'
+  if (property === 'fill-color') {
+    if (layerId === 'water') return '#172f40'
+    if (layerId.includes('park') || layerId.includes('wood') || layerId.includes('grass')) return '#20382e'
+    if (layerId.includes('wetland')) return '#233b3d'
+    if (layerId.includes('sand')) return '#403d30'
+    if (layerId.includes('hospital') || layerId.includes('school')) return '#383440'
+    if (layerId.includes('aeroway')) return '#303940'
+    return '#252e35'
+  }
+  if (property === 'fill-outline-color') {
+    return layerId.includes('park') ? '#36523e' : '#3a464e'
+  }
+  if (property === 'line-color') {
+    if (layerId.includes('waterway')) return '#3c6481'
+    if (layerId.includes('park')) return '#3a5a42'
+    if (layerId.includes('casing')) return '#44505a'
+    if (layerId.includes('motorway')) return '#b98b55'
+    if (layerId.includes('trunk_primary')) return '#9c825b'
+    if (layerId.includes('secondary_tertiary')) return '#758b99'
+    if (layerId.includes('path_pedestrian')) return '#8d9c8d'
+    if (layerId.includes('rail')) return '#626c77'
+    if (layerId.includes('boundary')) return '#596974'
+    return '#65737e'
+  }
+  if (property === 'text-color') {
+    if (layerId.includes('water')) return '#9fc5e3'
+    if (layerId.includes('poi')) return '#d9c48d'
+    return '#d2dbe0'
+  }
+  if (property === 'text-halo-color') return '#20282e'
+  if (property === 'icon-color') return '#c5d2db'
+  return undefined
+}
+
+function applyMapTheme(
+  map: VectorMap,
+  darkMode: boolean,
+  originalPaint: Map<string, unknown>,
+) {
+  for (const layer of map.getStyle().layers ?? []) {
+    if (layer.id.startsWith('navigation-')) continue
+    const layerPaint = layer.paint as Record<string, unknown> | undefined
+    for (const property of mapColorProperties) {
+      const propertyKey = `${layer.id}:${property}`
+      if (!originalPaint.has(propertyKey)) {
+        if (!layerPaint || !(property in layerPaint)) continue
+        const initialValue = map.getPaintProperty(layer.id, property)
+        if (initialValue === undefined || initialValue === null) continue
+        originalPaint.set(propertyKey, initialValue)
+      }
+      const nightColor = nightColorFor(layer.id, property)
+      const value = darkMode && nightColor ? nightColor : originalPaint.get(propertyKey)
+      if (value !== undefined) map.setPaintProperty(layer.id, property, value as never)
+    }
+  }
+}
 
 export default function NavigationMap3D(props: NavigationMap3DProps) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -49,6 +120,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
   const manualCameraRef = useRef(false)
   const drivingZoomRef = useRef<number | null>(null)
   const lastZoomRequestRef = useRef(props.zoomRequest.id)
+  const originalPaintRef = useRef(new Map<string, unknown>())
   const [ready, setReady] = useState(false)
   const [worldView, setWorldView] = useState(props.leafletMap.getZoom() < 4)
   propsRef.current = props
@@ -63,6 +135,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
     let disposed = false
     let resizeObserver: ResizeObserver | undefined
     let loadTimeout: ReturnType<typeof setTimeout> | undefined
+    let renderTimeout: ReturnType<typeof setTimeout> | undefined
     let syncFromLeaflet: (() => void) | undefined
     let syncZoomFromLeaflet: ((event: ZoomAnimEvent) => void) | undefined
     const fail = () => {
@@ -228,7 +301,12 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
               id: 'navigation-accuracy-area', type: 'fill', source: 'navigation-accuracy',
               paint: { 'fill-color': '#2875e5', 'fill-opacity': 0.1, 'fill-outline-color': '#2875e5' },
             }, labelLayer)
-            setReady(true)
+            renderTimeout = setTimeout(fail, 12_000)
+            map.once('idle', () => {
+              if (disposed) return
+              if (renderTimeout) clearTimeout(renderTimeout)
+              setReady(true)
+            })
           } catch {
             fail()
           }
@@ -245,6 +323,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
     return () => {
       disposed = true
       if (loadTimeout) clearTimeout(loadTimeout)
+      if (renderTimeout) clearTimeout(renderTimeout)
       resizeObserver?.disconnect()
       if (syncFromLeaflet) leafletMap.off('move rotate', syncFromLeaflet)
       if (syncZoomFromLeaflet) leafletMap.off('zoomanim', syncZoomFromLeaflet)
@@ -260,6 +339,12 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
       cameraSourceRef.current = null
     }
   }, [props.leafletMap])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready) return
+    applyMapTheme(map, props.darkMode, originalPaintRef.current)
+  }, [props.darkMode, ready])
 
   useEffect(() => {
     const map = mapRef.current
