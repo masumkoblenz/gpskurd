@@ -22,6 +22,7 @@ import {
   Plus,
   Play,
   Search,
+  Sun,
   Volume2,
   X,
 } from 'lucide-react'
@@ -1357,6 +1358,7 @@ function NavigationPage() {
         activeStepIndex={activeGuidance?.stepIndex ?? stepIndex}
         route={route}
         isNavigating={isNavigating}
+        darkMode={darkMode}
         followLocation={followLocation}
         headingUpEnabled={headingUpEnabled}
         heading={headingUpEnabled ? heading : null}
@@ -1386,6 +1388,18 @@ function NavigationPage() {
           >
             <Box size={17} aria-hidden="true" />
             <span aria-live="polite">{perspectiveLabel}</span>
+          </button>
+        )}
+        {isNavigating && (
+          <button
+            className={`map-control-button ${darkMode ? 'map-control-button--active' : ''}`}
+            type="button"
+            onClick={toggleDarkMode}
+            aria-label={darkMode ? 'Moda ronahiyê çalak bike' : 'Moda şevê çalak bike'}
+            aria-pressed={darkMode}
+            title={darkMode ? 'Moda ronahiyê çalak bike' : 'Moda şevê çalak bike'}
+          >
+            {darkMode ? <Sun size={19} aria-hidden="true" /> : <Moon size={19} aria-hidden="true" />}
           </button>
         )}
         {isNavigating && (

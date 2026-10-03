@@ -1924,10 +1924,6 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
   filter: invert(.88) hue-rotate(180deg) brightness(.78) saturate(.72);
 }
 
-:root[data-theme="dark"] .map-3d-view canvas {
-  filter: invert(.88) hue-rotate(180deg) brightness(.78) saturate(.76);
-}
-
 :root[data-theme="dark"] .leaflet-control-attribution {
   border: 1px solid #35413a;
   border-radius: 7px;
@@ -2064,6 +2060,12 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
 :root[data-theme="dark"] .navigation-panel--active .navigation-footer,
 :root[data-theme="dark"] .navigation-panel--active > .navigation-drawer {
   border-color: #303c35;
+}
+
+:root[data-theme="dark"] .navigation-panel--active > .navigation-drawer > .navigation-footer {
+  border-color: #303c35;
+  background: #19211d;
+  color: #e5ece8;
 }
 
 :root[data-theme="dark"] .navigation-panel--active .navigation-drawer-grip {
