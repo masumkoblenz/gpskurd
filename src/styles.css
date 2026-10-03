@@ -729,6 +729,11 @@ button:focus-visible, input:focus-visible { outline-color: #1a73e8; }
   box-shadow: 0 4px 16px #20212430;
 }
 .route-results-panel .route-summary { flex: 0 0 auto; margin: 0; border: 0; border-bottom: 1px solid #e8eaed; border-radius: 0; }
+.route-choices { display: grid; gap: 6px; padding: 10px 12px; overflow-y: auto; min-height: 0; }
+.route-choice { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 12px; padding: 10px 12px; border: 1px solid #dce2e8; border-radius: 8px; background: transparent; color: inherit; font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.route-choice--selected { border-color: #2875e5; background: #2875e512; }
+.route-choice:focus-visible { outline: 2px solid #2875e5; outline-offset: 2px; }
+.route-choice:disabled { opacity: 0.6; cursor: wait; }
 .route-results-panel .directions-section { min-height: 0; flex: 1 1 auto; padding: 10px 14px 0; overflow: hidden; }
 .route-results-panel .directions-heading { flex: 0 0 auto; }
 .route-results-panel .directions-list { min-height: 0; overflow-y: auto; overscroll-behavior: contain; }

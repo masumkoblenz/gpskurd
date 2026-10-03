@@ -17,6 +17,9 @@ type NavigationMap3DProps = {
   destination: Point | null
   currentLocation: Point | null
   route: NavigationRoute | null
+  routeCoordinates: [number, number][]
+  routeChoices: NavigationRoute[]
+  onRouteSelect: (route: NavigationRoute) => void
   trafficSignals: TrafficSignalNode[]
   isNavigating: boolean
   followLocation: boolean
@@ -280,6 +283,17 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
             map.setPaintProperty('building-3d', 'fill-extrusion-color', '#d6d0c5')
             map.setPaintProperty('building-3d', 'fill-extrusion-opacity', 0.88)
             const labelLayer = map.getStyle().layers?.find((layer) => layer.type === 'symbol' && layer.layout?.['text-field'])?.id
+            map.addSource('navigation-alternatives', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, tolerance: 0.2 })
+            map.addLayer({
+              id: 'navigation-alternatives-line', type: 'line', source: 'navigation-alternatives',
+              layout: { 'line-cap': 'round', 'line-join': 'round' },
+              paint: { 'line-color': '#8b99a8', 'line-width': 7, 'line-opacity': 0.85 },
+            }, labelLayer)
+            map.on('click', 'navigation-alternatives-line', (event) => {
+              const choiceIndex = event.features?.[0]?.properties?.choiceIndex
+              const choice = propsRef.current.routeChoices[Number(choiceIndex)]
+              if (choice) propsRef.current.onRouteSelect(choice)
+            })
             map.addSource('navigation-route', { type: 'geojson', data: { type: 'FeatureCollection', features: [] }, tolerance: 0.2 })
             for (const casing of [true, false]) {
               map.addLayer({
@@ -460,7 +474,7 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
     const source = map.getSource('navigation-route') as GeoJSONSource
     source.setData({
       type: 'FeatureCollection',
-      features: props.route ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: props.route.geometry.coordinates } }] : [],
+      features: props.routeCoordinates.length >= 2 ? [{ type: 'Feature', properties: {}, geometry: { type: 'LineString', coordinates: props.routeCoordinates } }] : [],
     })
     const isFoot = props.route?.mode === 'foot'
     const driving = props.isNavigating && !isFoot
@@ -468,7 +482,20 @@ export default function NavigationMap3D(props: NavigationMap3DProps) {
     map.setPaintProperty('navigation-route-line', 'line-width', driving ? 4 : isFoot ? 6 : 7)
     map.setPaintProperty('navigation-route-line', 'line-color', isFoot ? '#198a78' : '#2875e5')
     map.setPaintProperty('building-3d', 'fill-extrusion-opacity', driving ? 0.25 : 0.88)
-  }, [props.route, props.isNavigating, ready])
+  }, [props.route, props.routeCoordinates, props.isNavigating, ready])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !ready) return
+    ;(map.getSource('navigation-alternatives') as GeoJSONSource).setData({
+      type: 'FeatureCollection',
+      features: props.isNavigating ? [] : props.routeChoices.flatMap((choice, choiceIndex) => choice === props.route ? [] : [{
+        type: 'Feature' as const,
+        properties: { choiceIndex },
+        geometry: { type: 'LineString' as const, coordinates: choice.geometry.coordinates },
+      }]),
+    })
+  }, [props.routeChoices, props.route, props.isNavigating, ready])
 
   useEffect(() => {
     const map = mapRef.current
